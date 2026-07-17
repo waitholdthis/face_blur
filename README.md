@@ -28,6 +28,14 @@ stack (PostgreSQL + pgvector, Redis).
 
 ## Quick start
 
+### Option 0 — One command
+
+```bash
+./start.sh          # full Docker stack, built, started, seeded
+./start.sh --local  # no Docker: SQLite + in-process worker + dev servers
+./start.sh --stop   # stop either mode
+```
+
 ### Option A — Docker Compose (full stack: Postgres + Redis + API + worker + web)
 
 ```bash
@@ -37,6 +45,11 @@ docker compose up --build       # builds and starts everything
 # In another shell, seed demo data (admin + opt-out students + one processed upload):
 docker compose exec api python -m app.scripts.seed_demo
 ```
+
+**Restricted networks:** if Docker Hub is unreachable, set the `*_IMAGE`
+variables in `.env` to a mirror (examples in `.env.example`). If your network
+intercepts TLS with a private CA, pass it to the builds:
+`EXTRA_CA_BUNDLE="$(cat your-ca.pem)" docker compose build`.
 
 Then open:
 - **Web console:** http://localhost:3000  (log in with `admin` / `admin123`)

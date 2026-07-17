@@ -1,8 +1,5 @@
-FROM python:3.11-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libglib2.0-0 libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
+ARG BASE_IMAGE=python:3.11-slim
+FROM ${BASE_IMAGE}
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -10,8 +7,15 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# Optional PEM bundle for TLS-intercepting networks (see Dockerfile).
+ARG EXTRA_CA_BUNDLE=""
+
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN if [ -n "$EXTRA_CA_BUNDLE" ]; then \
+        printf '%s\n' "$EXTRA_CA_BUNDLE" > /usr/local/share/extra-ca.crt; \
+        export PIP_CERT=/usr/local/share/extra-ca.crt; \
+    fi; \
+    pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 

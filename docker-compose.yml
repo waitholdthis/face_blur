@@ -1,6 +1,8 @@
+# Base/service images are overridable via env for registry-mirror environments,
+# e.g. POSTGRES_IMAGE=mirror.gcr.io/pgvector/pgvector:pg16 (see .env.example).
 services:
   db:
-    image: pgvector/pgvector:pg16
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg16}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -17,7 +19,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: ${REDIS_IMAGE:-redis:7-alpine}
     ports:
       - "6379:6379"
     healthcheck:
@@ -30,6 +32,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ${PYTHON_IMAGE:-python:3.11-slim}
     ports:
       - "8000:8000"
     environment:
@@ -55,6 +59,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.worker
+      args:
+        BASE_IMAGE: ${PYTHON_IMAGE:-python:3.11-slim}
     environment:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-anonymization_vault}
       REDIS_URL: redis://redis:6379/0
@@ -76,6 +82,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
+        BASE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
         NEXT_PUBLIC_API_BASE: ${PUBLIC_BASE_URL:-http://localhost:8000}
     ports:
       - "3000:3000"
