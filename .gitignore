@@ -27,3 +27,6 @@ frontend/.env.local
 *.swp
 .idea/
 .vscode/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
