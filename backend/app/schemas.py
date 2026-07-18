@@ -102,10 +102,27 @@ class UploadAccepted(BaseModel):
     message: str
 
 
+class BatchUploadAccepted(BaseModel):
+    uploads: List[UploadAccepted]
+    uploaded_count: int
+    message: str
+
+
+class BulkDeleteResponse(BaseModel):
+    deleted_count: int
+
+
 # --- Override / review ---
 class OverrideEntry(BaseModel):
     face_id: str
     override_state: bool
+
+
+class ManualRedactionRequest(BaseModel):
+    box_x: float = Field(..., ge=0.0, lt=1.0)
+    box_y: float = Field(..., ge=0.0, lt=1.0)
+    box_w: float = Field(..., gt=0.0, le=1.0)
+    box_h: float = Field(..., gt=0.0, le=1.0)
 
 
 class ReviewCommitRequest(BaseModel):

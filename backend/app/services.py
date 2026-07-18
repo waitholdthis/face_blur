@@ -16,7 +16,14 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .matching import match_embedding
-from .models import DetectedFace, MediaUpload, ProcessingStatus, Student, StudentReference
+from .models import (
+    DetectedFace,
+    MatchConfidence,
+    MediaUpload,
+    ProcessingStatus,
+    Student,
+    StudentReference,
+)
 from .storage import PROCESSED_BUCKET, RAW_BUCKET, get_storage
 from .vision.pipeline import (
     SFACE_EMBEDDING_MODEL,
@@ -260,6 +267,29 @@ def process_media(
         raise
 
 
+def delete_media_uploads(db: Session, media_ids: Optional[Sequence[str]] = None) -> int:
+    """Permanently delete upload records and their raw/processed image objects."""
+    query = db.query(MediaUpload)
+    if media_ids is not None:
+        query = query.filter(MediaUpload.id.in_(list(media_ids)))
+    uploads = list(query.all())
+    storage = get_storage()
+
+    for media in uploads:
+        for storage_path in (media.storage_path_raw, media.storage_path_processed):
+            if not storage_path:
+                continue
+            bucket, separator, key = storage_path.partition("/")
+            if not separator or not bucket or not key:
+                raise ValueError(f"Invalid stored media path: {storage_path}")
+            storage.delete(bucket, key)
+
+    for media in uploads:
+        db.delete(media)
+    db.commit()
+    return len(uploads)
+
+
 # --- Review / finalize ---------------------------------------------------------
 def apply_overrides(
     db: Session,
@@ -317,3 +347,63 @@ def apply_overrides(
     db.commit()
     db.refresh(media)
     return media
+
+
+def add_manual_redaction(
+    db: Session,
+    media_id: str,
+    box: Tuple[float, float, float, float],
+    reviewer_id: Optional[str] = None,
+) -> MediaUpload:
+    """Add a reviewer-drawn privacy region and immediately re-render it blurred."""
+    media = db.get(MediaUpload, media_id)
+    if media is None:
+        raise ValueError(f"MediaUpload {media_id} not found")
+    if media.workflow_status not in {
+        ProcessingStatus.REVIEW_REQUIRED,
+        ProcessingStatus.COMPLETED,
+    }:
+        raise ValueError(
+            f"MediaUpload {media_id} cannot be edited while status is {media.workflow_status.value}"
+        )
+    box_x, box_y, box_w, box_h = box
+    if box_x + box_w > 1.0 or box_y + box_h > 1.0:
+        raise ValueError("Manual redaction box must stay within the image")
+
+    face = DetectedFace(
+        media_upload_id=media.id,
+        box_x=box_x,
+        box_y=box_y,
+        box_w=box_w,
+        box_h=box_h,
+        detection_confidence=1.0,
+        transient_embedding=[],
+        matched_student_id=None,
+        cosine_distance_score=None,
+        inference_confidence=MatchConfidence.NONE,
+        is_blurred_by_system=True,
+        is_blurred_override=False,
+    )
+    media.detected_faces.append(face)
+    db.flush()
+    return apply_overrides(db, media_id, [], reviewer_id=reviewer_id, finalize=False)
+
+
+def remove_manual_redaction(
+    db: Session,
+    media_id: str,
+    face_id: str,
+    reviewer_id: Optional[str] = None,
+) -> MediaUpload:
+    """Remove only a reviewer-drawn region, then re-render remaining decisions."""
+    media = db.get(MediaUpload, media_id)
+    if media is None:
+        raise ValueError(f"MediaUpload {media_id} not found")
+    face = next((item for item in media.detected_faces if item.id == face_id), None)
+    if face is None:
+        raise KeyError(f"Detected face {face_id} does not belong to media {media_id}")
+    if face.transient_embedding or face.matched_student_id or not face.is_blurred_by_system:
+        raise ValueError("Only manually drawn redaction regions can be removed")
+    media.detected_faces.remove(face)
+    db.flush()
+    return apply_overrides(db, media_id, [], reviewer_id=reviewer_id, finalize=False)

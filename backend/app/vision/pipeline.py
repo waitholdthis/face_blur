@@ -116,7 +116,128 @@ class YuNetFaceDetector:
             settings.yunet_nms_threshold,
             settings.yunet_top_k,
         )
+        self._refine_detector = cv2.FaceDetectorYN.create(
+            self.model_path,
+            "",
+            (320, 320),
+            settings.yunet_refine_score_threshold,
+            settings.yunet_nms_threshold,
+            settings.yunet_top_k,
+        )
+        cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        self._proposal_cascade = cv2.CascadeClassifier(cascade_path)
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _face_rows_to_results(
+        faces: Optional[np.ndarray],
+        *,
+        scale: float = 1.0,
+        offset_x: int = 0,
+        offset_y: int = 0,
+    ) -> List[FaceDetection]:
+        if faces is None:
+            return []
+        inverse = 1.0 / scale
+        results: List[FaceDetection] = []
+        for face in faces:
+            x, y, width, height = (float(value) * inverse for value in face[:4])
+            points = tuple(
+                (
+                    float(face[index]) * inverse + offset_x,
+                    float(face[index + 1]) * inverse + offset_y,
+                )
+                for index in range(4, 14, 2)
+            )
+            results.append(
+                FaceDetection(
+                    (
+                        round(x + offset_x),
+                        round(y + offset_y),
+                        round(width),
+                        round(height),
+                    ),
+                    float(face[14]),
+                    points,
+                )
+            )
+        return results
+
+    @staticmethod
+    def _intersection_over_union(first: FaceDetection, second: FaceDetection) -> float:
+        ax, ay, aw, ah = first.box
+        bx, by, bw, bh = second.box
+        intersection_width = max(0, min(ax + aw, bx + bw) - max(ax, bx))
+        intersection_height = max(0, min(ay + ah, by + bh) - max(ay, by))
+        intersection = intersection_width * intersection_height
+        if intersection == 0:
+            return 0.0
+        return intersection / float(aw * ah + bw * bh - intersection)
+
+    @classmethod
+    def _deduplicate(cls, detections: Sequence[FaceDetection]) -> List[FaceDetection]:
+        merged: List[FaceDetection] = []
+        for candidate in sorted(detections, key=lambda item: item.confidence, reverse=True):
+            if any(
+                cls._intersection_over_union(candidate, accepted)
+                >= settings.detector_merge_iou_threshold
+                for accepted in merged
+            ):
+                continue
+            merged.append(candidate)
+        return merged
+
+    def _refine_around_proposals(
+        self,
+        image_bgr: np.ndarray,
+        scaled_bgr: np.ndarray,
+        scale: float,
+    ) -> List[FaceDetection]:
+        if not settings.detector_refinement_enabled or self._proposal_cascade.empty():
+            return []
+
+        gray = cv2.equalizeHist(cv2.cvtColor(scaled_bgr, cv2.COLOR_BGR2GRAY))
+        proposals, _reject_levels, weights = self._proposal_cascade.detectMultiScale3(
+            gray,
+            scaleFactor=1.05,
+            minNeighbors=3,
+            minSize=(settings.detector_refinement_min_face_pixels,) * 2,
+            outputRejectLevels=True,
+        )
+        ranked = sorted(
+            zip(proposals, weights),
+            key=lambda item: float(item[1]),
+            reverse=True,
+        )[: settings.detector_refinement_max_proposals]
+
+        image_height, image_width = image_bgr.shape[:2]
+        minimum_face_size = max(
+            settings.detector_refinement_min_face_pixels,
+            round(max(image_width, image_height) * settings.detector_refinement_min_face_ratio),
+        )
+        inverse = 1.0 / scale
+        refined: List[FaceDetection] = []
+        for (proposal_x, proposal_y, proposal_w, proposal_h), _weight in ranked:
+            center_x = (float(proposal_x) + float(proposal_w) / 2.0) * inverse
+            center_y = (float(proposal_y) + float(proposal_h) / 2.0) * inverse
+            crop_side = max(float(proposal_w), float(proposal_h)) * inverse
+            crop_side *= settings.detector_refinement_crop_expansion
+            left = max(0, round(center_x - crop_side / 2.0))
+            top = max(0, round(center_y - crop_side / 2.0))
+            right = min(image_width, round(center_x + crop_side / 2.0))
+            bottom = min(image_height, round(center_y + crop_side / 2.0))
+            if right <= left or bottom <= top:
+                continue
+            crop = image_bgr[top:bottom, left:right]
+            with self._lock:
+                self._refine_detector.setInputSize((crop.shape[1], crop.shape[0]))
+                _retval, faces = self._refine_detector.detect(crop)
+            for detection in self._face_rows_to_results(
+                faces, offset_x=left, offset_y=top
+            ):
+                if min(detection.box[2], detection.box[3]) >= minimum_face_size:
+                    refined.append(detection)
+        return refined
 
     def detect(self, image_bgr: np.ndarray) -> List[DetectionResult]:
         height, width = image_bgr.shape[:2]
@@ -134,25 +255,9 @@ class YuNetFaceDetector:
         with self._lock:
             self._detector.setInputSize((scaled.shape[1], scaled.shape[0]))
             _retval, faces = self._detector.detect(scaled)
-
-        if faces is None:
-            return []
-        inverse = 1.0 / scale
-        results: List[DetectionResult] = []
-        for face in faces:
-            x, y, w, h = (float(v) * inverse for v in face[:4])
-            points = tuple(
-                (float(face[index]) * inverse, float(face[index + 1]) * inverse)
-                for index in range(4, 14, 2)
-            )
-            results.append(
-                FaceDetection(
-                    (round(x), round(y), round(w), round(h)),
-                    float(face[14]),
-                    points,
-                )
-            )
-        return results
+        primary = self._face_rows_to_results(faces, scale=scale)
+        refined = self._refine_around_proposals(image_bgr, scaled, scale)
+        return self._deduplicate([*primary, *refined])
 
 
 def ground_truth_detector(

@@ -16,6 +16,8 @@ from app.vision.pipeline import (
     SFACE_EMBEDDING_MODEL,
     AnonymizationPipeline,
     DetectedRegion,
+    FaceDetection,
+    YuNetFaceDetector,
     ground_truth_detector,
 )
 from app.vision.synthetic import draw_face, encode_jpeg, generate_face_image
@@ -120,6 +122,16 @@ def test_render_requires_one_flag_per_region():
     region = DetectedRegion(10, 10, 20, 20, 1.0, 50, 50)
     with pytest.raises(ValueError, match="corresponding redaction flag"):
         AnonymizationPipeline(detector=lambda _image: []).render_anonymized(image, [region], [])
+
+
+def test_high_recall_detector_deduplicates_overlapping_refinement_boxes():
+    primary = FaceDetection((10, 10, 50, 50), 0.91)
+    overlapping_refinement = FaceDetection((12, 12, 52, 52), 0.70)
+    missed_face = FaceDetection((100, 20, 40, 45), 0.44)
+    merged = YuNetFaceDetector._deduplicate(
+        [overlapping_refinement, missed_face, primary]
+    )
+    assert merged == [primary, missed_face]
 
 
 def test_yunet_sface_alignment_pipeline_when_models_are_installed():

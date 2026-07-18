@@ -61,4 +61,56 @@ describe("ReviewQueue", () => {
       )
     );
   });
+
+  it("lets the reviewer re-run high-recall detection", () => {
+    const onReprocess = jest.fn().mockResolvedValue(undefined);
+    render(
+      <ReviewQueue
+        media={makeMedia()}
+        onCommit={jest.fn()}
+        onReprocess={onReprocess}
+      />
+    );
+    fireEvent.click(screen.getByText("Re-run detection"));
+    expect(onReprocess).toHaveBeenCalledTimes(1);
+  });
+
+  it("can remove a reviewer-drawn redaction area", async () => {
+    const media = makeMedia();
+    media.detected_faces = [
+      {
+        ...media.detected_faces[0],
+        id: "manual-1",
+        matched_student_id: null,
+        matched_student_name: null,
+        inference_confidence: "NONE",
+        is_blurred_by_system: true,
+        review_reason: "MANUAL_REDACTION",
+      },
+    ];
+    const onRemoveManual = jest.fn().mockResolvedValue(undefined);
+    render(
+      <ReviewQueue
+        media={media}
+        onCommit={jest.fn()}
+        onRemoveManual={onRemoveManual}
+      />
+    );
+    fireEvent.click(screen.getByTitle("Manual redaction"));
+    fireEvent.click(screen.getByText("Remove manual area"));
+    await waitFor(() => expect(onRemoveManual).toHaveBeenCalledWith("manual-1"));
+  });
+
+  it("can delete the current uploaded photo from the review queue", () => {
+    const onDeleteMedia = jest.fn().mockResolvedValue(undefined);
+    render(
+      <ReviewQueue
+        media={makeMedia()}
+        onCommit={jest.fn()}
+        onDeleteMedia={onDeleteMedia}
+      />
+    );
+    fireEvent.click(screen.getByText("Delete uploaded photo"));
+    expect(onDeleteMedia).toHaveBeenCalledTimes(1);
+  });
 });

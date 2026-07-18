@@ -91,13 +91,16 @@ and watch the full detect → match → blur → review flow — no photos requi
 2. **Upload a group photo.** It is streamed to private storage, a tracking record
    is created, and the anonymization job is queued (Redis + Celery in production,
    inline in dev).
-3. **Automated pass.** The worker uses YuNet to detect faces and five landmarks,
-   aligns each crop, computes an SFace embedding, and searches all quality-checked
+3. **Automated pass.** The worker uses a high-recall YuNet pass plus localized
+   refinement around additional face proposals, aligns each crop from five
+   landmarks, computes an SFace embedding, and searches all quality-checked
    templates in the opt-out registry. Confirmed and ambiguous near-matches are
    conservatively flagged (`is_blurred_by_system = true`).
 4. **Human review.** The reviewer opens the image, sees every detection as a
    colored box (red = will be blurred), and clicks any box to override the
-   decision. The final decision is `XOR(system_flag, human_override)` — so the
+   decision. If a difficult pose is still missed, **Add missed face** lets the
+   reviewer drag a server-rendered blur region directly over it. The final
+   decision is `XOR(system_flag, human_override)` — so the
    reviewer can both **clear false positives** and **catch false negatives**.
 5. **Finalize.** On commit, the server re-renders the image applying an
    irreversible Gaussian blur to every finally-flagged face and writes the
@@ -152,8 +155,11 @@ POST /api/v1/auth/login            → JWT
 GET  /api/v1/students              → list opt-out registry
 POST /api/v1/students              → enroll student (multipart: fields + reference_image)
 POST /api/v1/media/upload          → upload group photo, queue processing
+POST /api/v1/media/upload/batch    → upload up to 25 group photos in one request
 POST /api/v1/media/demo            → generate + process a synthetic demo photo
+DELETE /api/v1/media               → permanently delete all uploaded media
 GET  /api/v1/media/{id}            → detail incl. detected faces + signed URLs
+DELETE /api/v1/media/{id}          → permanently delete one upload + stored copies
 POST /api/v1/media/{id}/review     → apply overrides, (optionally) finalize
 GET  /api/v1/assets/{bucket}/{k}   → signed-URL object access (local backend)
 ```
@@ -169,7 +175,7 @@ in `lib/`; the `evaluateFinalBlur` XOR helper mirrors the backend exactly.
 
 ## Testing
 
-**Backend — 47 tests**, exercising the vision pipeline
+**Backend — 56 tests**, exercising the vision pipeline
 (detection, embeddings, blur), matching, the XOR override logic, auth, signed-URL
 access control, and the full upload → process → review → finalize workflow.
 
@@ -206,6 +212,9 @@ Highlights:
 | `CELERY_TASK_ALWAYS_EAGER` | `true` | set `false` + run a worker in prod |
 | `REDIS_URL` | `redis://localhost:6379/0` | Celery broker/result backend |
 | `MATCH_THRESHOLD` | `0.10` | max cosine distance for a match (see design notes) |
+| `YUNET_SCORE_THRESHOLD` | `0.60` | primary detector confidence cutoff |
+| `YUNET_REFINE_SCORE_THRESHOLD` | `0.40` | localized high-recall refinement cutoff |
+| `DETECTOR_REFINEMENT_ENABLED` | `true` | refine small/tilted face proposals |
 | `SFACE_MATCH_THRESHOLD` | `0.45` | conservative starter distance; calibrate locally |
 | `MATCH_MIN_MARGIN` | `0.08` | required separation from the runner-up identity |
 | `REDACTION_PADDING_RATIO` | `0.25` | expands coverage around the detector box |
@@ -224,6 +233,10 @@ fallback and for deterministic synthetic tests.
 
 - **Alignment.** YuNet's five landmarks are passed through SFace `alignCrop`
   before feature extraction, reducing sensitivity to face-box shifts and pose.
+- **Detection recall.** A conservative primary cutoff is supplemented by a
+  lower-threshold YuNet pass limited to Haar-proposed crops. Overlapping results
+  are merged, tiny weak boxes are rejected, and the reviewer can re-run the
+  detector or draw a manual redaction for poses no automated model finds.
 - **Multiple references.** Enrollment accepts one to five single-face photos.
   Each is checked for face count, size, sharpness, brightness, and detector
   confidence, then stored as an independent matching template.

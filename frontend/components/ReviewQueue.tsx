@@ -2,11 +2,20 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { evaluateFinalBlur } from "@/lib/blur";
-import type { DetectedFace, MediaUploadDetail, OverrideEntry } from "@/lib/types";
+import type {
+  DetectedFace,
+  ManualRedactionBox,
+  MediaUploadDetail,
+  OverrideEntry,
+} from "@/lib/types";
 
 interface Props {
   media: MediaUploadDetail;
   onCommit: (overrides: OverrideEntry[], finalize: boolean) => Promise<void>;
+  onAddManual?: (box: ManualRedactionBox) => Promise<void>;
+  onRemoveManual?: (faceId: string) => Promise<void>;
+  onReprocess?: () => Promise<void>;
+  onDeleteMedia?: () => Promise<void>;
   committing?: boolean;
 }
 
@@ -17,11 +26,24 @@ const confidenceColor: Record<string, string> = {
   NONE: "#64748b",
 };
 
-export default function ReviewQueue({ media, onCommit, committing }: Props) {
+type Point = { x: number; y: number };
+
+export default function ReviewQueue({
+  media,
+  onCommit,
+  onAddManual,
+  onRemoveManual,
+  onReprocess,
+  onDeleteMedia,
+  committing,
+}: Props) {
   const [faces, setFaces] = useState<DetectedFace[]>(media.detected_faces);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [dims, setDims] = useState({ width: 0, height: 0 });
+  const [drawMode, setDrawMode] = useState(false);
+  const [drawStart, setDrawStart] = useState<Point | null>(null);
+  const [drawEnd, setDrawEnd] = useState<Point | null>(null);
 
   useEffect(() => {
     setFaces(media.detected_faces);
@@ -62,6 +84,39 @@ export default function ReviewQueue({ media, onCommit, committing }: Props) {
 
   const blurredCount = faces.filter((f) => evaluateFinalBlur(f)).length;
 
+  const pointFromEvent = (event: React.PointerEvent<HTMLDivElement>): Point => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+    };
+  };
+
+  const finishDrawing = async (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!drawStart || !onAddManual) return;
+    const end = pointFromEvent(event);
+    const box: ManualRedactionBox = {
+      box_x: Math.min(drawStart.x, end.x),
+      box_y: Math.min(drawStart.y, end.y),
+      box_w: Math.abs(end.x - drawStart.x),
+      box_h: Math.abs(end.y - drawStart.y),
+    };
+    setDrawStart(null);
+    setDrawEnd(null);
+    if (box.box_w < 0.01 || box.box_h < 0.01) return;
+    setDrawMode(false);
+    await onAddManual(box);
+  };
+
+  const draft = drawStart && drawEnd
+    ? {
+        left: Math.min(drawStart.x, drawEnd.x) * dims.width,
+        top: Math.min(drawStart.y, drawEnd.y) * dims.height,
+        width: Math.abs(drawEnd.x - drawStart.x) * dims.width,
+        height: Math.abs(drawEnd.y - drawStart.y) * dims.height,
+      }
+    : null;
+
   return (
     <div style={{ display: "flex", gap: 24, alignItems: "flex-start", flexWrap: "wrap" }}>
       <div
@@ -94,10 +149,14 @@ export default function ReviewQueue({ media, onCommit, committing }: Props) {
           return (
             <div
               key={face.id}
-              title={face.matched_student_name || "Unknown identity"}
+              title={
+                face.review_reason === "MANUAL_REDACTION"
+                  ? "Manual redaction"
+                  : face.matched_student_name || "Unknown identity"
+              }
               onClick={() => {
                 setSelectedId(face.id);
-                toggle(face.id);
+                if (face.review_reason !== "MANUAL_REDACTION") toggle(face.id);
               }}
               style={{
                 position: "absolute",
@@ -117,10 +176,81 @@ export default function ReviewQueue({ media, onCommit, committing }: Props) {
             />
           );
         })}
+
+        {draft && (
+          <div
+            aria-label="New manual blur area"
+            style={{
+              position: "absolute",
+              ...draft,
+              border: "3px dashed #dc2626",
+              background: "rgba(220,38,38,0.22)",
+              zIndex: 30,
+              pointerEvents: "none",
+            }}
+          />
+        )}
+
+        {drawMode && (
+          <div
+            aria-label="Draw a box around the missed face"
+            onPointerDown={(event) => {
+              event.currentTarget.setPointerCapture(event.pointerId);
+              const point = pointFromEvent(event);
+              setDrawStart(point);
+              setDrawEnd(point);
+            }}
+            onPointerMove={(event) => {
+              if (drawStart) setDrawEnd(pointFromEvent(event));
+            }}
+            onPointerUp={finishDrawing}
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: `${dims.width}px`,
+              height: `${dims.height}px`,
+              cursor: "crosshair",
+              zIndex: 25,
+              touchAction: "none",
+            }}
+          />
+        )}
       </div>
 
       <div className="card" style={{ flex: "1 1 280px", minWidth: 260 }}>
         <h3 style={{ margin: "0 0 4px" }}>Operational Control Panel</h3>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 8,
+            margin: "12px 0 10px",
+          }}
+        >
+          <button
+            className={drawMode ? "btn dark" : "btn secondary"}
+            disabled={committing || !onAddManual}
+            onClick={() => {
+              setDrawMode((active) => !active);
+              setDrawStart(null);
+              setDrawEnd(null);
+            }}
+          >
+            {drawMode ? "Cancel drawing" : "+ Add missed face"}
+          </button>
+          <button
+            className="btn secondary"
+            disabled={committing || !onReprocess}
+            onClick={onReprocess}
+          >
+            Re-run detection
+          </button>
+        </div>
+        {drawMode && (
+          <p style={{ margin: "0 0 12px", fontSize: 13, color: "#991b1b" }}>
+            Drag a tight box around the missed face. It will be blurred immediately.
+          </p>
+        )}
         <p className="muted" style={{ marginTop: 0, fontSize: 13 }}>
           {faces.length} faces detected · {blurredCount} will be anonymized
         </p>
@@ -138,7 +268,9 @@ export default function ReviewQueue({ media, onCommit, committing }: Props) {
               <h4 style={{ margin: "0 0 8px" }}>Selected Target</h4>
               <p style={{ fontSize: 13, margin: "4px 0" }}>
                 <strong>Identity:</strong>{" "}
-                {selected.matched_student_name || "Unknown / not in registry"}
+                {selected.review_reason === "MANUAL_REDACTION"
+                  ? "Reviewer-added privacy area"
+                  : selected.matched_student_name || "Unknown / not in registry"}
               </p>
               <p style={{ fontSize: 13, margin: "4px 0" }}>
                 <strong>Match:</strong>{" "}
@@ -180,6 +312,19 @@ export default function ReviewQueue({ media, onCommit, committing }: Props) {
               >
                 Toggle Blur
               </button>
+              {selected.review_reason === "MANUAL_REDACTION" && onRemoveManual && (
+                <button
+                  className="btn secondary"
+                  style={{ width: "100%", marginTop: 8 }}
+                  disabled={committing}
+                  onClick={async () => {
+                    await onRemoveManual(selected.id);
+                    setSelectedId(null);
+                  }}
+                >
+                  Remove manual area
+                </button>
+              )}
             </div>
           ) : (
             <p className="muted" style={{ fontStyle: "italic", fontSize: 14 }}>
@@ -204,6 +349,17 @@ export default function ReviewQueue({ media, onCommit, committing }: Props) {
         >
           Save Draft (re-render only)
         </button>
+
+        {onDeleteMedia && (
+          <button
+            className="btn danger"
+            style={{ width: "100%", marginTop: 16 }}
+            disabled={committing}
+            onClick={onDeleteMedia}
+          >
+            Delete uploaded photo
+          </button>
+        )}
 
         {media.processed_url && (
           <p style={{ marginTop: 14, fontSize: 13 }}>

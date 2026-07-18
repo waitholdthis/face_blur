@@ -4,9 +4,9 @@ from __future__ import annotations
 import random
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -15,6 +15,9 @@ from ..config import settings
 from ..database import get_db
 from ..models import MediaUpload, ProcessingStatus, Student, User
 from ..schemas import (
+    BatchUploadAccepted,
+    BulkDeleteResponse,
+    ManualRedactionRequest,
     MediaUploadDetail,
     MediaUploadSummary,
     ReviewCommitRequest,
@@ -22,7 +25,13 @@ from ..schemas import (
     UploadAccepted,
 )
 from ..serializers import media_to_detail, media_to_summary
-from ..services import apply_overrides, process_media
+from ..services import (
+    add_manual_redaction,
+    apply_overrides,
+    delete_media_uploads,
+    process_media,
+    remove_manual_redaction,
+)
 from ..storage import RAW_BUCKET, get_storage
 from ..tasks import enqueue_process_media
 from ..vision.pipeline import ground_truth_detector
@@ -31,6 +40,7 @@ from ..vision.synthetic import encode_jpeg, generate_group_photo
 router = APIRouter(prefix="/api/v1/media", tags=["media"])
 
 _ALLOWED_CONTENT = {"image/jpeg", "image/jpg", "image/png", "image/webp", "image/bmp"}
+ValidatedUpload = Tuple[str, bytes, str]
 
 
 def _load_media_or_404(db: Session, media_id: str) -> MediaUpload:
@@ -40,6 +50,56 @@ def _load_media_or_404(db: Session, media_id: str) -> MediaUpload:
     return media
 
 
+def _validate_upload(file: UploadFile) -> ValidatedUpload:
+    filename = file.filename or "upload.jpg"
+    if file.content_type and file.content_type.lower() not in _ALLOWED_CONTENT:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported media type for {filename}: {file.content_type}",
+        )
+    data = file.file.read(settings.max_upload_bytes + 1)
+    if not data:
+        raise HTTPException(status_code=400, detail=f"Empty upload: {filename}")
+    if len(data) > settings.max_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"{filename} exceeds the {settings.max_upload_bytes // (1024 * 1024)} MB limit",
+        )
+    suffix = Path(filename).suffix.lower()
+    suffix = suffix if suffix in {".jpg", ".jpeg", ".png", ".webp", ".bmp"} else ".jpg"
+    return filename, data, suffix
+
+
+def _stage_uploads(
+    uploads: List[ValidatedUpload], db: Session, uploader_id: str
+) -> List[MediaUpload]:
+    storage = get_storage()
+    media_records: List[MediaUpload] = []
+    saved_objects: List[Tuple[str, str]] = []
+    try:
+        for filename, data, suffix in uploads:
+            media_id = str(uuid.uuid4())
+            key = f"{media_id}/upload{suffix}"
+            storage.save(RAW_BUCKET, key, data)
+            saved_objects.append((RAW_BUCKET, key))
+            media = MediaUpload(
+                id=media_id,
+                original_filename=filename,
+                storage_path_raw=f"{RAW_BUCKET}/{key}",
+                workflow_status=ProcessingStatus.PENDING,
+                uploader_identity_id=uploader_id,
+            )
+            db.add(media)
+            media_records.append(media)
+        db.commit()
+    except Exception:
+        db.rollback()
+        for bucket, key in saved_objects:
+            storage.delete(bucket, key)
+        raise
+    return media_records
+
+
 @router.post("/upload", response_model=UploadAccepted, status_code=status.HTTP_202_ACCEPTED)
 def upload_group_media(
     file: UploadFile = File(...),
@@ -47,39 +107,64 @@ def upload_group_media(
     current: User = Depends(get_current_user),
 ) -> UploadAccepted:
     """Ingest a group image, store it privately, and queue anonymization."""
-    if file.content_type and file.content_type.lower() not in _ALLOWED_CONTENT:
-        raise HTTPException(status_code=415, detail=f"Unsupported media type: {file.content_type}")
-
-    data = file.file.read(settings.max_upload_bytes + 1)
-    if not data:
-        raise HTTPException(status_code=400, detail="Empty upload")
-    if len(data) > settings.max_upload_bytes:
-        raise HTTPException(status_code=413, detail="Upload exceeds the 20 MB limit")
-
-    media_id = str(uuid.uuid4())
-    suffix = Path(file.filename or "upload.jpg").suffix.lower()
-    suffix = suffix if suffix in {".jpg", ".jpeg", ".png", ".webp", ".bmp"} else ".jpg"
-    key = f"{media_id}/upload{suffix}"
-    get_storage().save(RAW_BUCKET, key, data)
-
-    media = MediaUpload(
-        id=media_id,
-        original_filename=file.filename or "upload.jpg",
-        storage_path_raw=f"{RAW_BUCKET}/{key}",
-        workflow_status=ProcessingStatus.PENDING,
-        uploader_identity_id=current.id,
-    )
-    db.add(media)
-    db.commit()
+    media = _stage_uploads([_validate_upload(file)], db, current.id)[0]
 
     # In eager mode this runs inline; with a real broker it is queued.
-    enqueue_process_media(media_id)
+    enqueue_process_media(media.id)
 
     db.refresh(media)
     return UploadAccepted(
-        media_id=media_id,
+        media_id=media.id,
         status=media.workflow_status,
         message="Asset securely staged. AI anonymization pipeline queued.",
+    )
+
+
+@router.post(
+    "/upload/batch",
+    response_model=BatchUploadAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def upload_group_media_batch(
+    files: List[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> BatchUploadAccepted:
+    """Validate, stage, and queue several group photos in one request."""
+    if not files:
+        raise HTTPException(status_code=400, detail="Select at least one image")
+    if len(files) > settings.max_batch_upload_files:
+        raise HTTPException(
+            status_code=413,
+            detail=f"A maximum of {settings.max_batch_upload_files} photos can be uploaded at once",
+        )
+    validated = [_validate_upload(file) for file in files]
+    total_bytes = sum(len(data) for _filename, data, _suffix in validated)
+    if total_bytes > settings.max_batch_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "Combined upload exceeds the "
+                f"{settings.max_batch_upload_bytes // (1024 * 1024)} MB batch limit"
+            ),
+        )
+
+    media_records = _stage_uploads(validated, db, current.id)
+    results: List[UploadAccepted] = []
+    for media in media_records:
+        enqueue_process_media(media.id)
+        db.refresh(media)
+        results.append(
+            UploadAccepted(
+                media_id=media.id,
+                status=media.workflow_status,
+                message="Asset securely staged. AI anonymization pipeline queued.",
+            )
+        )
+    return BatchUploadAccepted(
+        uploads=results,
+        uploaded_count=len(results),
+        message=f"{len(results)} photos staged and queued for review.",
     )
 
 
@@ -143,11 +228,70 @@ def list_media(
     return [media_to_summary(m) for m in db.execute(stmt).scalars()]
 
 
+@router.delete("", response_model=BulkDeleteResponse)
+def delete_all_media(
+    db: Session = Depends(get_db), _: User = Depends(get_current_user)
+) -> BulkDeleteResponse:
+    """Permanently remove every uploaded group photo and anonymized render."""
+    return BulkDeleteResponse(deleted_count=delete_media_uploads(db))
+
+
+@router.post("/{media_id}/faces", response_model=MediaUploadDetail)
+def create_manual_redaction(
+    media_id: str,
+    payload: ManualRedactionRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> MediaUploadDetail:
+    """Add a reviewer-drawn box when automated face detection misses a face."""
+    try:
+        media = add_manual_redaction(
+            db,
+            media_id,
+            (payload.box_x, payload.box_y, payload.box_w, payload.box_h),
+            reviewer_id=current.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return media_to_detail(media)
+
+
+@router.delete("/{media_id}/faces/{face_id}", response_model=MediaUploadDetail)
+def delete_manual_redaction(
+    media_id: str,
+    face_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> MediaUploadDetail:
+    """Remove a reviewer-drawn box without permitting detected faces to be deleted."""
+    try:
+        media = remove_manual_redaction(
+            db, media_id, face_id, reviewer_id=current.id
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return media_to_detail(media)
+
+
 @router.get("/{media_id}", response_model=MediaUploadDetail)
 def get_media(
     media_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)
 ) -> MediaUploadDetail:
     return media_to_detail(_load_media_or_404(db, media_id))
+
+
+@router.delete(
+    "/{media_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response
+)
+def delete_media(
+    media_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)
+) -> Response:
+    """Permanently remove one upload, all detections, and both stored copies."""
+    _load_media_or_404(db, media_id)
+    delete_media_uploads(db, [media_id])
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{media_id}/reprocess", response_model=MediaUploadDetail)

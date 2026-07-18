@@ -11,7 +11,9 @@ from .storage import get_storage
 def face_to_out(face: DetectedFace) -> DetectedFaceOut:
     student = face.matched_student
     name = f"{student.first_name} {student.last_name}" if student else None
-    if face.matched_student_id:
+    if not face.transient_embedding and face.is_blurred_by_system:
+        review_reason = "MANUAL_REDACTION"
+    elif face.matched_student_id:
         review_reason = "CONFIRMED_MATCH"
     elif face.is_blurred_by_system:
         review_reason = "AMBIGUOUS_MATCH"

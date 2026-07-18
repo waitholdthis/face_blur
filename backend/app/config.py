@@ -77,10 +77,21 @@ class Settings(BaseSettings):
     )
     yunet_model_name: str = Field(default="face_detection_yunet_2023mar.onnx")
     sface_model_name: str = Field(default="face_recognition_sface_2021dec.onnx")
-    yunet_score_threshold: float = Field(default=0.75)
+    # The primary pass favors recall because every proposal is still identity
+    # matched and presented to a human before finalization. A lower-threshold
+    # refinement pass runs only around Haar proposals to recover small/tilted
+    # faces without flooding the full image with weak detections.
+    yunet_score_threshold: float = Field(default=0.60)
+    yunet_refine_score_threshold: float = Field(default=0.40)
     yunet_nms_threshold: float = Field(default=0.30)
     yunet_top_k: int = Field(default=5000)
     vision_max_dimension: int = Field(default=1920)
+    detector_refinement_enabled: bool = Field(default=True)
+    detector_refinement_max_proposals: int = Field(default=24)
+    detector_refinement_crop_expansion: float = Field(default=6.0)
+    detector_refinement_min_face_ratio: float = Field(default=0.012)
+    detector_refinement_min_face_pixels: int = Field(default=24)
+    detector_merge_iou_threshold: float = Field(default=0.25)
 
     # SFace returns cosine similarity; this application stores cosine distance
     # (1 - similarity), so smaller values are better. These conservative starter
@@ -94,6 +105,8 @@ class Settings(BaseSettings):
     # Enrollment quality and upload limits.
     max_reference_images: int = Field(default=5)
     max_upload_bytes: int = Field(default=20 * 1024 * 1024)
+    max_batch_upload_files: int = Field(default=25)
+    max_batch_upload_bytes: int = Field(default=100 * 1024 * 1024)
     reference_min_face_pixels: int = Field(default=64)
     reference_min_sharpness: float = Field(default=20.0)
     reference_min_brightness: float = Field(default=35.0)

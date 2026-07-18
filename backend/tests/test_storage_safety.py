@@ -20,3 +20,12 @@ def test_signed_url_encodes_fragment_characters(client):
     response = client.get(url)
     assert response.status_code == 200
     assert response.content == b"jpeg-bytes"
+
+
+def test_local_storage_delete_is_contained_and_idempotent(tmp_path):
+    storage = LocalStorage(str(tmp_path / "root"))
+    storage.save(RAW_BUCKET, "media/photo.jpg", b"private")
+    assert storage.exists(RAW_BUCKET, "media/photo.jpg")
+    storage.delete(RAW_BUCKET, "media/photo.jpg")
+    storage.delete(RAW_BUCKET, "media/photo.jpg")
+    assert not storage.exists(RAW_BUCKET, "media/photo.jpg")

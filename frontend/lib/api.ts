@@ -2,6 +2,7 @@ import { clearToken, getToken } from "./auth";
 import type {
   MediaUploadDetail,
   MediaUploadSummary,
+  ManualRedactionBox,
   OverrideEntry,
   Student,
 } from "./types";
@@ -63,12 +64,34 @@ export const api = {
     request<void>(`/api/v1/students/${id}`, { method: "DELETE" }),
 
   listMedia: () => request<MediaUploadSummary[]>("/api/v1/media"),
+  deleteMedia: (id: string) =>
+    request<void>(`/api/v1/media/${id}`, { method: "DELETE" }),
+  deleteAllMedia: () =>
+    request<{ deleted_count: number }>("/api/v1/media", { method: "DELETE" }),
   getMedia: (id: string) => request<MediaUploadDetail>(`/api/v1/media/${id}`),
+  reprocessMedia: (id: string) =>
+    request<MediaUploadDetail>(`/api/v1/media/${id}/reprocess`, { method: "POST" }),
+  addManualRedaction: (id: string, box: ManualRedactionBox) =>
+    request<MediaUploadDetail>(`/api/v1/media/${id}/faces`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(box),
+    }),
+  removeManualRedaction: (id: string, faceId: string) =>
+    request<MediaUploadDetail>(`/api/v1/media/${id}/faces/${faceId}`, {
+      method: "DELETE",
+    }),
   uploadMedia: (form: FormData) =>
     request<{ media_id: string; status: string; message: string }>(
       "/api/v1/media/upload",
       { method: "POST", body: form }
     ),
+  uploadMediaBatch: (form: FormData) =>
+    request<{
+      uploads: Array<{ media_id: string; status: string; message: string }>;
+      uploaded_count: number;
+      message: string;
+    }>("/api/v1/media/upload/batch", { method: "POST", body: form }),
   createDemo: () =>
     request<MediaUploadDetail>("/api/v1/media/demo", { method: "POST" }),
   commitReview: (id: string, overrides: OverrideEntry[], finalize: boolean) =>

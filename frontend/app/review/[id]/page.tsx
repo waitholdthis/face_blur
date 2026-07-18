@@ -6,7 +6,11 @@ import { useParams, useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import ReviewQueue from "@/components/ReviewQueue";
 import { api, ApiError } from "@/lib/api";
-import type { MediaUploadDetail, OverrideEntry } from "@/lib/types";
+import type {
+  ManualRedactionBox,
+  MediaUploadDetail,
+  OverrideEntry,
+} from "@/lib/types";
 
 export default function ReviewPage() {
   const params = useParams<{ id: string }>();
@@ -57,6 +61,60 @@ export default function ReviewPage() {
     }
   };
 
+  const addManualRedaction = async (box: ManualRedactionBox) => {
+    setCommitting(true);
+    setError(null);
+    try {
+      setMedia(await api.addManualRedaction(id, box));
+      setNotice("Missed face added and blurred. Review the new red box before finalizing.");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not add the blur area");
+    } finally {
+      setCommitting(false);
+    }
+  };
+
+  const removeManualRedaction = async (faceId: string) => {
+    setCommitting(true);
+    setError(null);
+    try {
+      setMedia(await api.removeManualRedaction(id, faceId));
+      setNotice("Manual blur area removed.");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not remove the blur area");
+    } finally {
+      setCommitting(false);
+    }
+  };
+
+  const reprocess = async () => {
+    setCommitting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      setMedia(await api.reprocessMedia(id));
+      setNotice("Detection re-ran with the high-recall face detector.");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Reprocessing failed");
+    } finally {
+      setCommitting(false);
+    }
+  };
+
+  const deleteUpload = async () => {
+    const filename = media?.original_filename || "this uploaded photo";
+    if (!window.confirm(`Permanently delete ${filename} and its anonymized copy?`)) return;
+    setCommitting(true);
+    setError(null);
+    try {
+      await api.deleteMedia(id);
+      router.push("/dashboard");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Delete failed");
+      setCommitting(false);
+    }
+  };
+
   return (
     <AppShell>
       <div style={{ marginBottom: 16 }}>
@@ -85,12 +143,16 @@ export default function ReviewPage() {
                 Detection and registry matching are still running. This page will update automatically.
               </p>
             </div>
-          ) : media.detected_faces.length === 0 ? (
-            <div className="card">
-              <p className="muted">No faces were detected in this image.</p>
-            </div>
           ) : (
-            <ReviewQueue media={media} onCommit={commit} committing={committing} />
+            <ReviewQueue
+              media={media}
+              onCommit={commit}
+              onAddManual={addManualRedaction}
+              onRemoveManual={removeManualRedaction}
+              onReprocess={reprocess}
+              onDeleteMedia={deleteUpload}
+              committing={committing}
+            />
           )}
         </>
       )}

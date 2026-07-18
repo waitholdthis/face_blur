@@ -22,7 +22,11 @@ export interface DetectedFace {
   is_blurred_override: boolean;
   is_final_blurred: boolean;
   requires_manual_review: boolean;
-  review_reason: "CONFIRMED_MATCH" | "AMBIGUOUS_MATCH" | "NO_REGISTRY_MATCH";
+  review_reason:
+    | "CONFIRMED_MATCH"
+    | "AMBIGUOUS_MATCH"
+    | "NO_REGISTRY_MATCH"
+    | "MANUAL_REDACTION";
 }
 
 export interface MediaUploadDetail {
@@ -63,4 +67,11 @@ export interface Student {
 export interface OverrideEntry {
   face_id: string;
   override_state: boolean;
+}
+
+export interface ManualRedactionBox {
+  box_x: number;
+  box_y: number;
+  box_w: number;
+  box_h: number;
 }

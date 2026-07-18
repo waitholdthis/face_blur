@@ -2,7 +2,9 @@
 from urllib.parse import parse_qs, urlparse
 
 from app.database import SessionLocal
+from app.models import MediaUpload
 from app.seed import seed_demo_students
+from app.storage import get_storage
 from tests.conftest import reference_face
 
 
@@ -33,6 +35,53 @@ def test_upload_rejects_non_image(client, auth_headers):
         files={"file": ("notes.txt", b"hello", "text/plain")},
     )
     assert resp.status_code == 415
+
+
+def test_batch_upload_processes_multiple_photos(client, auth_headers):
+    first, _ = reference_face(101, texture=False)
+    second, _ = reference_face(102, texture=False)
+    response = client.post(
+        "/api/v1/media/upload/batch",
+        headers=auth_headers,
+        files=[
+            ("files", ("first.jpg", first, "image/jpeg")),
+            ("files", ("second.jpg", second, "image/jpeg")),
+        ],
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["uploaded_count"] == 2
+    assert len(body["uploads"]) == 2
+    assert len({upload["media_id"] for upload in body["uploads"]}) == 2
+    assert all(upload["status"] == "REVIEW_REQUIRED" for upload in body["uploads"])
+    queue = client.get("/api/v1/media", headers=auth_headers).json()
+    assert {item["original_filename"] for item in queue} == {"first.jpg", "second.jpg"}
+
+
+def test_batch_upload_validates_every_file_before_staging(client, auth_headers):
+    image, _ = reference_face(101, texture=False)
+    response = client.post(
+        "/api/v1/media/upload/batch",
+        headers=auth_headers,
+        files=[
+            ("files", ("valid.jpg", image, "image/jpeg")),
+            ("files", ("notes.txt", b"not an image", "text/plain")),
+        ],
+    )
+    assert response.status_code == 415
+    assert client.get("/api/v1/media", headers=auth_headers).json() == []
+
+
+def test_batch_upload_enforces_file_count_limit(client, auth_headers):
+    response = client.post(
+        "/api/v1/media/upload/batch",
+        headers=auth_headers,
+        files=[
+            ("files", (f"photo-{index}.jpg", b"jpeg", "image/jpeg"))
+            for index in range(26)
+        ],
+    )
+    assert response.status_code == 413
 
 
 def test_demo_flow_requires_seed(client, auth_headers):
@@ -89,6 +138,45 @@ def test_review_commit_updates_final_state(client, auth_headers):
     assert final[stranger["id"]]["is_final_blurred"] is True  # false negative corrected
 
 
+def test_reviewer_can_add_and_remove_a_missed_face_box(client, auth_headers):
+    with SessionLocal() as db:
+        seed_demo_students(db)
+    body = client.post("/api/v1/media/demo", headers=auth_headers).json()
+    media_id = body["id"]
+
+    added = client.post(
+        f"/api/v1/media/{media_id}/faces",
+        headers=auth_headers,
+        json={"box_x": 0.02, "box_y": 0.03, "box_w": 0.12, "box_h": 0.18},
+    )
+    assert added.status_code == 200, added.text
+    manual = next(
+        face
+        for face in added.json()["detected_faces"]
+        if face["review_reason"] == "MANUAL_REDACTION"
+    )
+    assert manual["is_final_blurred"] is True
+    assert len(added.json()["detected_faces"]) == len(body["detected_faces"]) + 1
+
+    removed = client.delete(
+        f"/api/v1/media/{media_id}/faces/{manual['id']}", headers=auth_headers
+    )
+    assert removed.status_code == 200, removed.text
+    assert len(removed.json()["detected_faces"]) == len(body["detected_faces"])
+
+
+def test_manual_face_box_must_stay_inside_image(client, auth_headers):
+    with SessionLocal() as db:
+        seed_demo_students(db)
+    media_id = client.post("/api/v1/media/demo", headers=auth_headers).json()["id"]
+    response = client.post(
+        f"/api/v1/media/{media_id}/faces",
+        headers=auth_headers,
+        json={"box_x": 0.95, "box_y": 0.1, "box_w": 0.2, "box_h": 0.2},
+    )
+    assert response.status_code == 409
+
+
 def test_list_media_filter(client, auth_headers):
     with SessionLocal() as db:
         seed_demo_students(db)
@@ -100,6 +188,52 @@ def test_list_media_filter(client, auth_headers):
         "/api/v1/media", headers=auth_headers, params={"workflow_status": "COMPLETED"}
     )
     assert filtered.json() == []
+
+
+def test_delete_upload_removes_database_record_and_stored_images(client, auth_headers):
+    with SessionLocal() as db:
+        seed_demo_students(db)
+    body = client.post("/api/v1/media/demo", headers=auth_headers).json()
+    media_id = body["id"]
+    with SessionLocal() as db:
+        media = db.get(MediaUpload, media_id)
+        assert media is not None
+        paths = [media.storage_path_raw, media.storage_path_processed]
+    storage = get_storage()
+    for path in paths:
+        bucket, _, key = path.partition("/")
+        assert storage.exists(bucket, key)
+
+    response = client.delete(f"/api/v1/media/{media_id}", headers=auth_headers)
+    assert response.status_code == 204, response.text
+    assert client.get(f"/api/v1/media/{media_id}", headers=auth_headers).status_code == 404
+    for path in paths:
+        bucket, _, key = path.partition("/")
+        assert not storage.exists(bucket, key)
+
+
+def test_delete_all_uploads_clears_review_queue_and_storage(client, auth_headers):
+    with SessionLocal() as db:
+        seed_demo_students(db)
+    first = client.post("/api/v1/media/demo", headers=auth_headers).json()
+    second = client.post("/api/v1/media/demo", headers=auth_headers).json()
+    with SessionLocal() as db:
+        uploads = list(db.query(MediaUpload).all())
+        paths = [
+            path
+            for media in uploads
+            for path in (media.storage_path_raw, media.storage_path_processed)
+            if path
+        ]
+
+    response = client.delete("/api/v1/media", headers=auth_headers)
+    assert response.status_code == 200, response.text
+    assert response.json() == {"deleted_count": 2}
+    assert client.get("/api/v1/media", headers=auth_headers).json() == []
+    for path in paths:
+        bucket, _, key = path.partition("/")
+        assert not get_storage().exists(bucket, key)
+    assert first["id"] != second["id"]
 
 
 def test_signed_asset_url_access_control(client, auth_headers):

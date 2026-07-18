@@ -38,6 +38,9 @@ class StorageBackend(ABC):
     def exists(self, bucket: str, key: str) -> bool: ...
 
     @abstractmethod
+    def delete(self, bucket: str, key: str) -> None: ...
+
+    @abstractmethod
     def url(self, bucket: str, key: str, expires: Optional[int] = None) -> str: ...
 
 
@@ -88,6 +91,13 @@ class LocalStorage(StorageBackend):
     def exists(self, bucket: str, key: str) -> bool:
         return os.path.exists(self._path(bucket, key))
 
+    def delete(self, bucket: str, key: str) -> None:
+        path = self._path(bucket, key)
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            return
+
     def url(self, bucket: str, key: str, expires: Optional[int] = None) -> str:
         ttl = expires or settings.s3_presign_expiry_seconds
         exp = str(int(time.time()) + ttl)
@@ -126,6 +136,9 @@ class S3Storage(StorageBackend):  # pragma: no cover - exercised only with real 
             return True
         except ClientError:
             return False
+
+    def delete(self, bucket: str, key: str) -> None:
+        self._client.delete_object(Bucket=bucket, Key=key)
 
     def url(self, bucket: str, key: str, expires: Optional[int] = None) -> str:
         return self._client.generate_presigned_url(
