@@ -1,14 +1,17 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { login } from "@/lib/api";
 import { saveToken } from "@/lib/auth";
 
+const SHOW_DEMO_LOGIN = process.env.NEXT_PUBLIC_SHOW_DEMO_LOGIN === "1";
+
 export default function LoginPage() {
   const router = useRouter();
-  const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("admin123");
+  const [username, setUsername] = useState(SHOW_DEMO_LOGIN ? "admin" : "");
+  const [password, setPassword] = useState(SHOW_DEMO_LOGIN ? "admin123" : "");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -67,9 +70,14 @@ export default function LoginPage() {
             {busy ? "Signing in…" : "Sign in"}
           </button>
         </form>
-        <p className="muted" style={{ fontSize: 12, marginTop: 16, marginBottom: 0 }}>
-          Default demo credentials: <code>admin / admin123</code>
+        <p className="muted" style={{ fontSize: 13, marginTop: 16 }}>
+          New school? <Link href="/register">Create your account</Link>
         </p>
+        {SHOW_DEMO_LOGIN && (
+          <p className="muted" style={{ fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+            Default demo credentials: <code>admin / admin123</code>
+          </p>
+        )}
       </div>
     </div>
   );

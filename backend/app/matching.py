@@ -67,12 +67,23 @@ def classify_confidence(
 
 
 def _templates_by_student(
-    db: Session, embedding_model: str, dimension: int
+    db: Session,
+    embedding_model: str,
+    dimension: int,
+    owner_id: Optional[str] = None,
 ) -> Dict[str, List[Sequence[float]]]:
-    students: List[Student] = list(db.execute(select(Student)).scalars())
-    references: List[StudentReference] = list(
-        db.execute(select(StudentReference)).scalars()
-    )
+    students_stmt = select(Student)
+    if owner_id is not None:
+        students_stmt = students_stmt.where(Student.owner_id == owner_id)
+    students: List[Student] = list(db.execute(students_stmt).scalars())
+    if not students:
+        return {}
+    references_stmt = select(StudentReference)
+    if owner_id is not None:
+        references_stmt = references_stmt.where(
+            StudentReference.student_id.in_([student.id for student in students])
+        )
+    references: List[StudentReference] = list(db.execute(references_stmt).scalars())
     grouped: Dict[str, List[Sequence[float]]] = {student.id: [] for student in students}
     for reference in references:
         if (
@@ -95,19 +106,21 @@ def match_embedding(
     embedding: Sequence[float],
     threshold: Optional[float] = None,
     embedding_model: Optional[str] = None,
+    owner_id: Optional[str] = None,
 ) -> MatchResult:
     """Match a face while rejecting weak or ambiguous open-set candidates.
 
     A candidate inside the distance threshold but too close to a runner-up is
     conservatively blurred without assigning an identity. This avoids exposing a
     possible opt-out student while preventing a low-margin identity assertion.
+    When ``owner_id`` is given, only that owner's enrolled students are candidates.
     """
     model = embedding_model or (
         SFACE_EMBEDDING_MODEL if len(embedding) == 128 else LEGACY_EMBEDDING_MODEL
     )
     configured_threshold, _high, _medium, _low = _model_thresholds(model)
     active_threshold = configured_threshold if threshold is None else threshold
-    templates = _templates_by_student(db, model, len(embedding))
+    templates = _templates_by_student(db, model, len(embedding), owner_id=owner_id)
     if not templates:
         return MatchResult(None, None, MatchConfidence.NONE, False)
 

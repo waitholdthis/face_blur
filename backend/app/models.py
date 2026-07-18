@@ -25,6 +25,7 @@ from sqlalchemy import (
     String,
     Text,
     TypeDecorator,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -80,16 +81,23 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(32), default="admin", nullable=False)
+    school_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 
 
 class Student(Base):
     __tablename__ = "students"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "student_id_number", name="uq_students_owner_student_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    # The school (user) account that enrolled this student. NULL for legacy rows
+    # created before multi-tenancy; those remain visible only to admins.
+    owner_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     first_name: Mapped[str] = mapped_column(String(64), nullable=False)
     last_name: Mapped[str] = mapped_column(String(64), nullable=False)
-    student_id_number: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
+    student_id_number: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     grade_level: Mapped[str] = mapped_column(String(16), nullable=False)
     # In this system a student is present in the registry precisely because they
     # opted OUT of social-media consent; the flag defaults to False accordingly.

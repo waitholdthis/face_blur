@@ -56,6 +56,30 @@ export async function login(username: string, password: string): Promise<string>
   return body.access_token as string;
 }
 
+export async function register(
+  schoolName: string,
+  username: string,
+  password: string
+): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/v1/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ school_name: schoolName, username, password }),
+  });
+  if (!res.ok) {
+    let detail = "Could not create the account";
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === "string") detail = body.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(res.status, detail);
+  }
+  const body = await res.json();
+  return body.access_token as string;
+}
+
 export const api = {
   listStudents: () => request<Student[]>("/api/v1/students"),
   createStudent: (form: FormData) =>
@@ -74,6 +98,12 @@ export const api = {
   addManualRedaction: (id: string, box: ManualRedactionBox) =>
     request<MediaUploadDetail>(`/api/v1/media/${id}/faces`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(box),
+    }),
+  updateFaceBox: (id: string, faceId: string, box: ManualRedactionBox) =>
+    request<MediaUploadDetail>(`/api/v1/media/${id}/faces/${faceId}`, {
+      method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(box),
     }),

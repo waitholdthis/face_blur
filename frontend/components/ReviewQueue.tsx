@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { evaluateFinalBlur } from "@/lib/blur";
+import { saveAnonymizedRender } from "@/lib/download";
 import type {
   DetectedFace,
   ManualRedactionBox,
@@ -14,6 +15,7 @@ interface Props {
   onCommit: (overrides: OverrideEntry[], finalize: boolean) => Promise<void>;
   onAddManual?: (box: ManualRedactionBox) => Promise<void>;
   onRemoveManual?: (faceId: string) => Promise<void>;
+  onResizeFace?: (faceId: string, box: ManualRedactionBox) => Promise<void>;
   onReprocess?: () => Promise<void>;
   onDeleteMedia?: () => Promise<void>;
   committing?: boolean;
@@ -27,12 +29,35 @@ const confidenceColor: Record<string, string> = {
 };
 
 type Point = { x: number; y: number };
+type Corner = "nw" | "ne" | "sw" | "se";
+
+interface ResizeState {
+  faceId: string;
+  anchor: Point; // the fixed opposite corner, in normalized coordinates
+  box: ManualRedactionBox; // live box while dragging
+}
+
+const MIN_BOX = 0.01;
+
+function boxFromAnchor(anchor: Point, pointer: Point): ManualRedactionBox {
+  const w = Math.max(Math.abs(pointer.x - anchor.x), MIN_BOX);
+  const h = Math.max(Math.abs(pointer.y - anchor.y), MIN_BOX);
+  const x = pointer.x < anchor.x ? anchor.x - w : anchor.x;
+  const y = pointer.y < anchor.y ? anchor.y - h : anchor.y;
+  return {
+    box_x: Math.min(Math.max(x, 0), 1 - w),
+    box_y: Math.min(Math.max(y, 0), 1 - h),
+    box_w: w,
+    box_h: h,
+  };
+}
 
 export default function ReviewQueue({
   media,
   onCommit,
   onAddManual,
   onRemoveManual,
+  onResizeFace,
   onReprocess,
   onDeleteMedia,
   committing,
@@ -44,6 +69,65 @@ export default function ReviewQueue({
   const [drawMode, setDrawMode] = useState(false);
   const [drawStart, setDrawStart] = useState<Point | null>(null);
   const [drawEnd, setDrawEnd] = useState<Point | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [resize, setResize] = useState<ResizeState | null>(null);
+
+  const liveBox = (face: DetectedFace): ManualRedactionBox =>
+    resize && resize.faceId === face.id
+      ? resize.box
+      : { box_x: face.box_x, box_y: face.box_y, box_w: face.box_w, box_h: face.box_h };
+
+  const normalizedPoint = (event: React.PointerEvent): Point => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+    };
+  };
+
+  const startResize = (face: DetectedFace, corner: Corner, event: React.PointerEvent) => {
+    event.stopPropagation();
+    event.preventDefault();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    const box = liveBox(face);
+    const anchor: Point = {
+      x: corner === "nw" || corner === "sw" ? box.box_x + box.box_w : box.box_x,
+      y: corner === "nw" || corner === "ne" ? box.box_y + box.box_h : box.box_y,
+    };
+    setResize({ faceId: face.id, anchor, box });
+  };
+
+  const moveResize = (event: React.PointerEvent) => {
+    if (!resize) return;
+    setResize({ ...resize, box: boxFromAnchor(resize.anchor, normalizedPoint(event)) });
+  };
+
+  const finishResize = async () => {
+    if (!resize) return;
+    const { faceId, box } = resize;
+    setResize(null);
+    // Show the new geometry immediately while the re-render round-trips.
+    setFaces((prev) =>
+      prev.map((f) => (f.id === faceId ? { ...f, ...box } : f))
+    );
+    if (onResizeFace) await onResizeFace(faceId, box);
+  };
+
+  const downloadRender = async () => {
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      await saveAnonymizedRender(media);
+    } catch (err) {
+      setDownloadError(
+        err instanceof Error ? err.message : "Could not download the anonymized photo"
+      );
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   useEffect(() => {
     setFaces(media.detected_faces);
@@ -146,6 +230,7 @@ export default function ReviewQueue({
         {faces.map((face) => {
           const blurred = evaluateFinalBlur(face);
           const isSel = face.id === selectedId;
+          const box = liveBox(face);
           return (
             <div
               key={face.id}
@@ -160,10 +245,10 @@ export default function ReviewQueue({
               }}
               style={{
                 position: "absolute",
-                left: `${face.box_x * dims.width}px`,
-                top: `${face.box_y * dims.height}px`,
-                width: `${face.box_w * dims.width}px`,
-                height: `${face.box_h * dims.height}px`,
+                left: `${box.box_x * dims.width}px`,
+                top: `${box.box_y * dims.height}px`,
+                width: `${box.box_w * dims.width}px`,
+                height: `${box.box_h * dims.height}px`,
                 border: `3px solid ${blurred ? "#e63946" : "#2a9d8f"}`,
                 backgroundColor: blurred ? "rgba(230,57,70,0.28)" : "rgba(42,157,143,0.06)",
                 backdropFilter: blurred ? "blur(7px)" : "none",
@@ -176,6 +261,44 @@ export default function ReviewQueue({
             />
           );
         })}
+
+        {selected && onResizeFace && !drawMode && !committing && (
+          <>
+            {(["nw", "ne", "sw", "se"] as Corner[]).map((corner) => {
+              const box = liveBox(selected);
+              const left =
+                (corner === "nw" || corner === "sw" ? box.box_x : box.box_x + box.box_w) *
+                dims.width;
+              const top =
+                (corner === "nw" || corner === "ne" ? box.box_y : box.box_y + box.box_h) *
+                dims.height;
+              return (
+                <div
+                  key={corner}
+                  aria-label={`Resize handle (${corner})`}
+                  onClick={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => startResize(selected, corner, e)}
+                  onPointerMove={moveResize}
+                  onPointerUp={finishResize}
+                  style={{
+                    position: "absolute",
+                    left: `${left - 7}px`,
+                    top: `${top - 7}px`,
+                    width: 14,
+                    height: 14,
+                    borderRadius: 3,
+                    background: "#fff",
+                    border: "2px solid #2563eb",
+                    boxShadow: "0 1px 4px rgba(15,23,42,0.35)",
+                    cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
+                    zIndex: 20,
+                    touchAction: "none",
+                  }}
+                />
+              );
+            })}
+          </>
+        )}
 
         {draft && (
           <div
@@ -305,6 +428,11 @@ export default function ReviewQueue({
                     : "No confident registry match — inspect before finalizing."}
                 </p>
               )}
+              {onResizeFace && (
+                <p className="muted" style={{ fontSize: 12, margin: "9px 0 0" }}>
+                  Drag the corner handles on the image to resize this blur area.
+                </p>
+              )}
               <button
                 className="btn dark"
                 style={{ width: "100%", marginTop: 10 }}
@@ -362,11 +490,31 @@ export default function ReviewQueue({
         )}
 
         {media.processed_url && (
-          <p style={{ marginTop: 14, fontSize: 13 }}>
-            <a href={media.processed_url} target="_blank" rel="noreferrer">
-              View anonymized render ↗
-            </a>
-          </p>
+          <>
+            <button
+              className="btn dark"
+              style={{ width: "100%", marginTop: 16 }}
+              disabled={downloading}
+              onClick={downloadRender}
+            >
+              {downloading ? "Preparing download…" : "⬇ Download anonymized photo"}
+            </button>
+            {media.workflow_status !== "COMPLETED" && (
+              <p className="muted" style={{ margin: "8px 0 0", fontSize: 12 }}>
+                This render is a draft until the review is finalized.
+              </p>
+            )}
+            {downloadError && (
+              <div className="error" style={{ marginTop: 8, fontSize: 13 }}>
+                {downloadError}
+              </div>
+            )}
+            <p style={{ marginTop: 10, fontSize: 13 }}>
+              <a href={media.processed_url} target="_blank" rel="noreferrer">
+                View anonymized render ↗
+              </a>
+            </p>
+          </>
         )}
       </div>
     </div>

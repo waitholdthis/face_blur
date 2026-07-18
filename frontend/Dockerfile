@@ -17,7 +17,10 @@ RUN if [ -n "$EXTRA_CA_BUNDLE" ]; then \
 COPY . .
 # API base is baked in at build time for the browser bundle; override as needed.
 ARG NEXT_PUBLIC_API_BASE=http://localhost:8000
+# Demo-credential hint on the login page; keep 0 for any real deployment.
+ARG NEXT_PUBLIC_SHOW_DEMO_LOGIN=0
 ENV NEXT_PUBLIC_API_BASE=$NEXT_PUBLIC_API_BASE \
+    NEXT_PUBLIC_SHOW_DEMO_LOGIN=$NEXT_PUBLIC_SHOW_DEMO_LOGIN \
     NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import ensure_admin_user
-from .config import settings
+from .config import settings, validate_production_settings
 from .database import SessionLocal, init_db
 from .routers import assets, auth, media, students
 from .services import migrate_legacy_references
@@ -15,6 +15,12 @@ from .services import migrate_legacy_references
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail fast rather than serve real traffic with demo-grade secrets.
+    problems = validate_production_settings(settings)
+    if problems:
+        raise RuntimeError(
+            "Refusing to start with insecure production settings: " + "; ".join(problems)
+        )
     # Create tables and bootstrap the admin account on startup.
     init_db()
     db = SessionLocal()

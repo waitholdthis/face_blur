@@ -31,6 +31,7 @@ from ..services import (
     delete_media_uploads,
     process_media,
     remove_manual_redaction,
+    update_face_box,
 )
 from ..storage import RAW_BUCKET, get_storage
 from ..tasks import enqueue_process_media
@@ -43,9 +44,10 @@ _ALLOWED_CONTENT = {"image/jpeg", "image/jpg", "image/png", "image/webp", "image
 ValidatedUpload = Tuple[str, bytes, str]
 
 
-def _load_media_or_404(db: Session, media_id: str) -> MediaUpload:
+def _load_media_or_404(db: Session, media_id: str, user: User) -> MediaUpload:
+    """Fetch an upload the caller is allowed to see; others look like 404s."""
     media = db.get(MediaUpload, media_id)
-    if media is None:
+    if media is None or (user.role != "admin" and media.uploader_identity_id != user.id):
         raise HTTPException(status_code=404, detail="Media upload not found")
     return media
 
@@ -179,9 +181,10 @@ def create_demo_upload(
     with a deterministic ``reference_seed`` are re-rendered into the photo along
     with a couple of non-enrolled strangers.
     """
-    demo_students: List[Student] = list(
-        db.execute(select(Student).where(Student.reference_seed.is_not(None))).scalars()
-    )
+    demo_stmt = select(Student).where(Student.reference_seed.is_not(None))
+    if current.role != "admin":
+        demo_stmt = demo_stmt.where(Student.owner_id == current.id)
+    demo_students: List[Student] = list(db.execute(demo_stmt).scalars())
     if not demo_students:
         raise HTTPException(
             status_code=409,
@@ -220,9 +223,11 @@ def create_demo_upload(
 def list_media(
     workflow_status: Optional[ProcessingStatus] = Query(default=None),
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current: User = Depends(get_current_user),
 ) -> List[MediaUploadSummary]:
     stmt = select(MediaUpload).order_by(MediaUpload.created_at.desc())
+    if current.role != "admin":
+        stmt = stmt.where(MediaUpload.uploader_identity_id == current.id)
     if workflow_status is not None:
         stmt = stmt.where(MediaUpload.workflow_status == workflow_status)
     return [media_to_summary(m) for m in db.execute(stmt).scalars()]
@@ -230,10 +235,11 @@ def list_media(
 
 @router.delete("", response_model=BulkDeleteResponse)
 def delete_all_media(
-    db: Session = Depends(get_db), _: User = Depends(get_current_user)
+    db: Session = Depends(get_db), current: User = Depends(get_current_user)
 ) -> BulkDeleteResponse:
-    """Permanently remove every uploaded group photo and anonymized render."""
-    return BulkDeleteResponse(deleted_count=delete_media_uploads(db))
+    """Permanently remove every visible group photo and anonymized render."""
+    owner_scope = None if current.role == "admin" else current.id
+    return BulkDeleteResponse(deleted_count=delete_media_uploads(db, owner_id=owner_scope))
 
 
 @router.post("/{media_id}/faces", response_model=MediaUploadDetail)
@@ -244,6 +250,7 @@ def create_manual_redaction(
     current: User = Depends(get_current_user),
 ) -> MediaUploadDetail:
     """Add a reviewer-drawn box when automated face detection misses a face."""
+    _load_media_or_404(db, media_id, current)
     try:
         media = add_manual_redaction(
             db,
@@ -251,6 +258,31 @@ def create_manual_redaction(
             (payload.box_x, payload.box_y, payload.box_w, payload.box_h),
             reviewer_id=current.id,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return media_to_detail(media)
+
+
+@router.patch("/{media_id}/faces/{face_id}", response_model=MediaUploadDetail)
+def resize_detection(
+    media_id: str,
+    face_id: str,
+    payload: ManualRedactionRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> MediaUploadDetail:
+    """Resize a detection box during review and re-render the blur."""
+    _load_media_or_404(db, media_id, current)
+    try:
+        media = update_face_box(
+            db,
+            media_id,
+            face_id,
+            (payload.box_x, payload.box_y, payload.box_w, payload.box_h),
+            reviewer_id=current.id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return media_to_detail(media)
@@ -264,6 +296,7 @@ def delete_manual_redaction(
     current: User = Depends(get_current_user),
 ) -> MediaUploadDetail:
     """Remove a reviewer-drawn box without permitting detected faces to be deleted."""
+    _load_media_or_404(db, media_id, current)
     try:
         media = remove_manual_redaction(
             db, media_id, face_id, reviewer_id=current.id
@@ -277,31 +310,31 @@ def delete_manual_redaction(
 
 @router.get("/{media_id}", response_model=MediaUploadDetail)
 def get_media(
-    media_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)
+    media_id: str, db: Session = Depends(get_db), current: User = Depends(get_current_user)
 ) -> MediaUploadDetail:
-    return media_to_detail(_load_media_or_404(db, media_id))
+    return media_to_detail(_load_media_or_404(db, media_id, current))
 
 
 @router.delete(
     "/{media_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response
 )
 def delete_media(
-    media_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)
+    media_id: str, db: Session = Depends(get_db), current: User = Depends(get_current_user)
 ) -> Response:
     """Permanently remove one upload, all detections, and both stored copies."""
-    _load_media_or_404(db, media_id)
+    _load_media_or_404(db, media_id, current)
     delete_media_uploads(db, [media_id])
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{media_id}/reprocess", response_model=MediaUploadDetail)
 def reprocess_media(
-    media_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)
+    media_id: str, db: Session = Depends(get_db), current: User = Depends(get_current_user)
 ) -> MediaUploadDetail:
     """Re-run detection + matching (e.g. after the opt-out registry changed)."""
-    _load_media_or_404(db, media_id)
+    _load_media_or_404(db, media_id, current)
     process_media(db, media_id)
-    media = _load_media_or_404(db, media_id)
+    media = _load_media_or_404(db, media_id, current)
     return media_to_detail(media)
 
 
@@ -313,7 +346,7 @@ def commit_review(
     current: User = Depends(get_current_user),
 ) -> ReviewCommitResponse:
     """Apply human overrides and (optionally) finalize the anonymized render."""
-    media = _load_media_or_404(db, media_id)
+    media = _load_media_or_404(db, media_id, current)
     overrides = [(e.face_id, e.override_state) for e in payload.overrides]
     try:
         media = apply_overrides(

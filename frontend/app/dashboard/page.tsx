@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import AppShell from "@/components/AppShell";
 import { api, ApiError } from "@/lib/api";
+import { downloadAnonymizedRender } from "@/lib/download";
 import type { MediaUploadSummary } from "@/lib/types";
 
 export default function DashboardPage() {
@@ -11,6 +12,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -38,6 +40,18 @@ export default function DashboardPage() {
       setError(err instanceof ApiError ? err.message : "Failed to create demo");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const downloadRender = async (id: string) => {
+    setDownloadingId(id);
+    setError(null);
+    try {
+      await downloadAnonymizedRender(id);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not download the anonymized photo");
+    } finally {
+      setDownloadingId(null);
     }
   };
 
@@ -134,6 +148,16 @@ export default function DashboardPage() {
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <Link href={`/review/${m.id}`}>Review →</Link>
+                      {m.workflow_status === "COMPLETED" && (
+                        <button
+                          className="btn secondary"
+                          style={{ padding: "4px 10px", fontSize: 13 }}
+                          disabled={busy || downloadingId === m.id}
+                          onClick={() => downloadRender(m.id)}
+                        >
+                          {downloadingId === m.id ? "Downloading…" : "⬇ Download"}
+                        </button>
+                      )}
                       <button
                         className="btn danger"
                         style={{ padding: "4px 10px", fontSize: 13 }}

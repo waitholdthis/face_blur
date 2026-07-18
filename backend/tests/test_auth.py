@@ -35,3 +35,58 @@ def test_protected_route_requires_auth(client):
 def test_invalid_token_rejected(client):
     resp = client.get("/api/v1/students", headers={"Authorization": "Bearer garbage"})
     assert resp.status_code == 401
+
+
+def test_register_creates_school_account(client):
+    resp = client.post(
+        "/api/v1/auth/register",
+        json={
+            "school_name": "Riverdale Elementary",
+            "username": "riverdale",
+            "password": "s3cret-pass",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    token = resp.json()["access_token"]
+
+    me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 200
+    body = me.json()
+    assert body["username"] == "riverdale"
+    assert body["role"] == "school"
+    assert body["school_name"] == "Riverdale Elementary"
+
+
+def test_register_then_login(client):
+    client.post(
+        "/api/v1/auth/register",
+        json={"school_name": "Hilltop High", "username": "hilltop", "password": "s3cret-pass"},
+    )
+    resp = client.post(
+        "/api/v1/auth/login", json={"username": "hilltop", "password": "s3cret-pass"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["token_type"] == "bearer"
+
+
+def test_register_duplicate_username_rejected(client):
+    payload = {"school_name": "Hilltop High", "username": "hilltop", "password": "s3cret-pass"}
+    assert client.post("/api/v1/auth/register", json=payload).status_code == 201
+    resp = client.post("/api/v1/auth/register", json=payload)
+    assert resp.status_code == 409
+
+
+def test_register_validation(client):
+    # Password too short.
+    resp = client.post(
+        "/api/v1/auth/register",
+        json={"school_name": "Hilltop High", "username": "hilltop", "password": "short"},
+    )
+    assert resp.status_code == 422
+
+    # Username with invalid characters.
+    resp = client.post(
+        "/api/v1/auth/register",
+        json={"school_name": "Hilltop High", "username": "bad user!", "password": "s3cret-pass"},
+    )
+    assert resp.status_code == 422

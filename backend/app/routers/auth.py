@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..auth import authenticate_user, create_access_token, get_current_user
+from ..auth import authenticate_user, create_access_token, get_current_user, hash_password
 from ..database import get_db
 from ..models import User
-from ..schemas import LoginRequest, Token, UserOut
+from ..schemas import LoginRequest, RegisterRequest, Token, UserOut
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
@@ -26,6 +28,35 @@ def login_json(payload: LoginRequest, db: Session = Depends(get_db)) -> Token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password"
         )
+    return _issue(user)
+
+
+@router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
+def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> Token:
+    """Self-service school account creation; returns a token so signup logs in."""
+    taken = db.execute(
+        select(User).where(User.username == payload.username)
+    ).scalar_one_or_none()
+    if taken:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="That username is already taken"
+        )
+    user = User(
+        username=payload.username,
+        hashed_password=hash_password(payload.password),
+        role="school",
+        school_name=payload.school_name.strip(),
+    )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError:
+        # Lost a race with a concurrent signup for the same username.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="That username is already taken"
+        )
+    db.refresh(user)
     return _issue(user)
 
 

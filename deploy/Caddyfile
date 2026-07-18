@@ -1,0 +1,14 @@
+# Caddy reverse proxy for FaceBlur.
+# Replace yourdomain.com with your real domain (twice), then:
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+# Caddy obtains and renews Let's Encrypt certificates automatically.
+
+app.yourdomain.com {
+	reverse_proxy localhost:3000
+	encode gzip
+}
+
+api.yourdomain.com {
+	reverse_proxy localhost:8000
+	encode gzip
+}

@@ -3,12 +3,15 @@
 services:
   db:
     image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg16}
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-anonymization_vault}
+    # Bound to loopback: only host-local tools may connect; services use the
+    # compose network. Docker published ports bypass ufw, so never expose these.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./backend/scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -20,8 +23,9 @@ services:
 
   redis:
     image: ${REDIS_IMAGE:-redis:7-alpine}
+    restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -34,9 +38,13 @@ services:
       dockerfile: Dockerfile
       args:
         BASE_IMAGE: ${PYTHON_IMAGE:-python:3.11-slim}
+    restart: unless-stopped
+    # Set BIND_IP=127.0.0.1 in .env when a reverse proxy (Caddy) runs on the
+    # same host, so plain HTTP is never reachable from outside.
     ports:
-      - "8000:8000"
+      - "${BIND_IP:-0.0.0.0}:8000:8000"
     environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-anonymization_vault}
       REDIS_URL: redis://redis:6379/0
       CELERY_TASK_ALWAYS_EAGER: "false"
@@ -61,7 +69,9 @@ services:
       dockerfile: Dockerfile.worker
       args:
         BASE_IMAGE: ${PYTHON_IMAGE:-python:3.11-slim}
+    restart: unless-stopped
     environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-anonymization_vault}
       REDIS_URL: redis://redis:6379/0
       CELERY_TASK_ALWAYS_EAGER: "false"
@@ -84,8 +94,10 @@ services:
       args:
         BASE_IMAGE: ${NODE_IMAGE:-node:22-alpine}
         NEXT_PUBLIC_API_BASE: ${PUBLIC_BASE_URL:-http://localhost:8000}
+        NEXT_PUBLIC_SHOW_DEMO_LOGIN: ${NEXT_PUBLIC_SHOW_DEMO_LOGIN:-0}
+    restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${BIND_IP:-0.0.0.0}:3000:3000"
     depends_on:
       - api
 

@@ -21,11 +21,18 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class RegisterRequest(BaseModel):
+    school_name: str = Field(..., min_length=2, max_length=128)
+    username: str = Field(..., min_length=3, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    password: str = Field(..., min_length=8, max_length=128)
+
+
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
     username: str
     role: str
+    school_name: Optional[str] = None
 
 
 # --- Students ---

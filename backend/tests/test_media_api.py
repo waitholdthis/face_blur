@@ -165,6 +165,54 @@ def test_reviewer_can_add_and_remove_a_missed_face_box(client, auth_headers):
     assert len(removed.json()["detected_faces"]) == len(body["detected_faces"])
 
 
+def test_reviewer_can_resize_a_detection_box(client, auth_headers):
+    with SessionLocal() as db:
+        seed_demo_students(db)
+    body = client.post("/api/v1/media/demo", headers=auth_headers).json()
+    media_id = body["id"]
+    face = body["detected_faces"][0]
+
+    new_box = {"box_x": 0.05, "box_y": 0.06, "box_w": 0.25, "box_h": 0.3}
+    resp = client.patch(
+        f"/api/v1/media/{media_id}/faces/{face['id']}",
+        headers=auth_headers,
+        json=new_box,
+    )
+    assert resp.status_code == 200, resp.text
+    updated = next(f for f in resp.json()["detected_faces"] if f["id"] == face["id"])
+    assert updated["box_x"] == 0.05
+    assert updated["box_y"] == 0.06
+    assert updated["box_w"] == 0.25
+    assert updated["box_h"] == 0.3
+    # Match metadata survives the resize; only geometry changed.
+    assert updated["matched_student_id"] == face["matched_student_id"]
+    assert resp.json()["processed_url"]
+
+
+def test_resize_detection_box_validation(client, auth_headers):
+    with SessionLocal() as db:
+        seed_demo_students(db)
+    body = client.post("/api/v1/media/demo", headers=auth_headers).json()
+    media_id = body["id"]
+    face_id = body["detected_faces"][0]["id"]
+
+    # Box escaping the image bounds is rejected.
+    out_of_bounds = client.patch(
+        f"/api/v1/media/{media_id}/faces/{face_id}",
+        headers=auth_headers,
+        json={"box_x": 0.9, "box_y": 0.1, "box_w": 0.2, "box_h": 0.2},
+    )
+    assert out_of_bounds.status_code == 409
+
+    # Unknown face id is a 404.
+    missing = client.patch(
+        f"/api/v1/media/{media_id}/faces/not-a-face",
+        headers=auth_headers,
+        json={"box_x": 0.1, "box_y": 0.1, "box_w": 0.2, "box_h": 0.2},
+    )
+    assert missing.status_code == 404
+
+
 def test_manual_face_box_must_stay_inside_image(client, auth_headers):
     with SessionLocal() as db:
         seed_demo_students(db)

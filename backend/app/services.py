@@ -23,6 +23,7 @@ from .models import (
     ProcessingStatus,
     Student,
     StudentReference,
+    User,
 )
 from .storage import PROCESSED_BUCKET, RAW_BUCKET, get_storage
 from .vision.pipeline import (
@@ -111,6 +112,7 @@ def enroll_student(
     image_bytes_list: Optional[Sequence[bytes]] = None,
     detector: Optional[DetectorFn] = None,
     reference_seed: Optional[int] = None,
+    owner_id: Optional[str] = None,
 ) -> Student:
     """Register an opt-out student from one or more reference face images."""
     payloads = list(image_bytes_list or ([] if image_bytes is None else [image_bytes]))
@@ -157,6 +159,7 @@ def enroll_student(
         stored_paths.append(f"{RAW_BUCKET}/{key}")
     student = Student(
         id=student_uuid,
+        owner_id=owner_id,
         first_name=first_name,
         last_name=last_name,
         student_id_number=student_id_number,
@@ -212,6 +215,11 @@ def process_media(
     media.workflow_status = ProcessingStatus.PROCESSING
     db.commit()
 
+    # School uploads only ever match against that school's own registry;
+    # admin (and legacy) uploads keep matching against every enrolled student.
+    uploader = db.get(User, media.uploader_identity_id)
+    owner_scope = uploader.id if uploader is not None and uploader.role == "school" else None
+
     try:
         raw_bucket, _, raw_key = media.storage_path_raw.partition("/")
         image_bytes = get_storage().load(raw_bucket, raw_key)
@@ -231,6 +239,7 @@ def process_media(
                 db,
                 region.embedding,
                 embedding_model=region.embedding_model,
+                owner_id=owner_scope,
             )
             nx, ny, nw, nh = region.norm_box
             face = DetectedFace(
@@ -267,11 +276,17 @@ def process_media(
         raise
 
 
-def delete_media_uploads(db: Session, media_ids: Optional[Sequence[str]] = None) -> int:
+def delete_media_uploads(
+    db: Session,
+    media_ids: Optional[Sequence[str]] = None,
+    owner_id: Optional[str] = None,
+) -> int:
     """Permanently delete upload records and their raw/processed image objects."""
     query = db.query(MediaUpload)
     if media_ids is not None:
         query = query.filter(MediaUpload.id.in_(list(media_ids)))
+    if owner_id is not None:
+        query = query.filter(MediaUpload.uploader_identity_id == owner_id)
     uploads = list(query.all())
     storage = get_storage()
 
@@ -385,6 +400,39 @@ def add_manual_redaction(
         is_blurred_override=False,
     )
     media.detected_faces.append(face)
+    db.flush()
+    return apply_overrides(db, media_id, [], reviewer_id=reviewer_id, finalize=False)
+
+
+def update_face_box(
+    db: Session,
+    media_id: str,
+    face_id: str,
+    box: Tuple[float, float, float, float],
+    reviewer_id: Optional[str] = None,
+) -> MediaUpload:
+    """Resize/move a detection box during review and re-render the blur."""
+    media = db.get(MediaUpload, media_id)
+    if media is None:
+        raise ValueError(f"MediaUpload {media_id} not found")
+    if media.workflow_status not in {
+        ProcessingStatus.REVIEW_REQUIRED,
+        ProcessingStatus.COMPLETED,
+    }:
+        raise ValueError(
+            f"MediaUpload {media_id} cannot be edited while status is {media.workflow_status.value}"
+        )
+    face = next((item for item in media.detected_faces if item.id == face_id), None)
+    if face is None:
+        raise KeyError(f"Detected face {face_id} does not belong to media {media_id}")
+    box_x, box_y, box_w, box_h = box
+    if box_x + box_w > 1.0 or box_y + box_h > 1.0:
+        raise ValueError("Detection box must stay within the image")
+
+    face.box_x = box_x
+    face.box_y = box_y
+    face.box_w = box_w
+    face.box_h = box_h
     db.flush()
     return apply_overrides(db, media_id, [], reviewer_id=reviewer_id, finalize=False)
 

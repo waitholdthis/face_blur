@@ -21,21 +21,29 @@ _ALLOWED_IMAGE_CONTENT = {"image/jpeg", "image/jpg", "image/png", "image/webp", 
 _STUDENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}$")
 
 
+def _load_student_or_404(db: Session, student_id: str, user: User) -> Student:
+    """Fetch a student the caller is allowed to see; others look like 404s."""
+    student = db.get(Student, student_id)
+    if student is None or (user.role != "admin" and student.owner_id != user.id):
+        raise HTTPException(status_code=404, detail="Student not found")
+    return student
+
+
 @router.get("", response_model=List[StudentOut])
 def list_students(
-    db: Session = Depends(get_db), _: User = Depends(get_current_user)
+    db: Session = Depends(get_db), current: User = Depends(get_current_user)
 ) -> List[Student]:
-    return list(db.execute(select(Student).order_by(Student.last_name)).scalars())
+    stmt = select(Student).order_by(Student.last_name)
+    if current.role != "admin":
+        stmt = stmt.where(Student.owner_id == current.id)
+    return list(db.execute(stmt).scalars())
 
 
 @router.get("/{student_id}", response_model=StudentOut)
 def get_student(
-    student_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)
+    student_id: str, db: Session = Depends(get_db), current: User = Depends(get_current_user)
 ) -> Student:
-    student = db.get(Student, student_id)
-    if student is None:
-        raise HTTPException(status_code=404, detail="Student not found")
-    return student
+    return _load_student_or_404(db, student_id, current)
 
 
 @router.post("", response_model=StudentOut, status_code=status.HTTP_201_CREATED)
@@ -48,7 +56,7 @@ def create_student(
     reference_image: Optional[UploadFile] = File(default=None),
     reference_images: Optional[List[UploadFile]] = File(default=None),
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current: User = Depends(get_current_user),
 ) -> Student:
     """Enroll an opt-out student from one to five single-face photos."""
     first_name, last_name = first_name.strip(), last_name.strip()
@@ -74,7 +82,10 @@ def create_student(
             detail=f"Upload no more than {settings.max_reference_images} reference images",
         )
     existing = db.execute(
-        select(Student).where(Student.student_id_number == student_id_number)
+        select(Student).where(
+            Student.student_id_number == student_id_number,
+            Student.owner_id == current.id,
+        )
     ).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail="student_id_number already exists")
@@ -98,6 +109,7 @@ def create_student(
             grade_level=grade_level,
             parent_consent_signed=parent_consent_signed,
             image_bytes_list=image_payloads,
+            owner_id=current.id,
         )
     except NoFaceDetectedError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -111,11 +123,9 @@ def create_student(
 
 @router.delete("/{student_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def delete_student(
-    student_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)
+    student_id: str, db: Session = Depends(get_db), current: User = Depends(get_current_user)
 ) -> Response:
-    student = db.get(Student, student_id)
-    if student is None:
-        raise HTTPException(status_code=404, detail="Student not found")
+    student = _load_student_or_404(db, student_id, current)
     db.delete(student)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

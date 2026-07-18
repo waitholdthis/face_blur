@@ -74,6 +74,19 @@ export default function ReviewPage() {
     }
   };
 
+  const resizeFace = async (faceId: string, box: ManualRedactionBox) => {
+    setCommitting(true);
+    setError(null);
+    try {
+      setMedia(await api.updateFaceBox(id, faceId, box));
+      setNotice("Blur area resized and re-rendered.");
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not resize the blur area");
+    } finally {
+      setCommitting(false);
+    }
+  };
+
   const removeManualRedaction = async (faceId: string) => {
     setCommitting(true);
     setError(null);
@@ -149,6 +162,7 @@ export default function ReviewPage() {
               onCommit={commit}
               onAddManual={addManualRedaction}
               onRemoveManual={removeManualRedaction}
+              onResizeFace={resizeFace}
               onReprocess={reprocess}
               onDeleteMedia={deleteUpload}
               committing={committing}

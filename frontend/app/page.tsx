@@ -69,7 +69,7 @@ export default function Home() {
                 blurs their faces before school photos are shared.
               </p>
               <div className="landing-hero-actions">
-                <Link className="landing-primary-cta" href="/login">Start protecting photos <ArrowIcon /></Link>
+                <Link className="landing-primary-cta" href="/register">Start protecting photos <ArrowIcon /></Link>
                 <a className="landing-text-cta" href="#how-it-works">See how it works</a>
               </div>
               <div className="landing-trust-line"><ShieldIcon /><span>Designed around FERPA and COPPA privacy workflows</span></div>
@@ -180,7 +180,7 @@ export default function Home() {
 
         <section className="landing-final-cta">
           <div className="landing-final-glow glow-left" /><div className="landing-final-glow glow-right" />
-          <div className="landing-final-content"><span className="landing-final-icon"><ShieldIcon /></span><h2>Every student belongs in the memory.<br />Not every face belongs online.</h2><p>Make privacy part of your photo workflow from the very first upload.</p><Link className="landing-primary-cta light" href="/login">Open the secure portal <ArrowIcon /></Link></div>
+          <div className="landing-final-content"><span className="landing-final-icon"><ShieldIcon /></span><h2>Every student belongs in the memory.<br />Not every face belongs online.</h2><p>Make privacy part of your photo workflow from the very first upload.</p><Link className="landing-primary-cta light" href="/register">Create your school account <ArrowIcon /></Link></div>
         </section>
       </main>
 

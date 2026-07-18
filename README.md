@@ -23,6 +23,7 @@ stack (PostgreSQL + pgvector, Redis).
 - [Configuration](#configuration)
 - [Design notes & honesty about the vision model](#design-notes)
 - [Security](#security)
+- [Going live](#going-live)
 
 ---
 
@@ -273,3 +274,42 @@ distributions without sending images off the machine.
 - Final blur is applied server-side and irreversibly (Gaussian blur on pixels).
 - **Before deploying:** set a strong `JWT_SECRET`, change `ADMIN_PASSWORD`,
   restrict `CORS_ORIGINS`, and put the API behind TLS.
+- Multi-tenant isolation: every school account only sees its own students and
+  uploads, and face matching only runs against that school's registry. The
+  `admin` role has cross-tenant visibility — guard its credentials accordingly.
+
+---
+
+## Going live
+
+The stack is production-ready via Docker Compose. The API **refuses to start**
+with `ENVIRONMENT=production` until the insecure defaults are replaced.
+
+1. **Configure secrets** — `cp .env.example .env`, then set:
+
+   ```bash
+   ENVIRONMENT=production
+   JWT_SECRET=$(openssl rand -hex 32)      # unique, 32+ chars (enforced)
+   ADMIN_PASSWORD=<strong unique password> # 12+ chars (enforced)
+   POSTGRES_PASSWORD=<strong unique password>
+   PUBLIC_BASE_URL=https://api.your-domain.example
+   CORS_ORIGINS=https://app.your-domain.example   # never "*" (enforced)
+   NEXT_PUBLIC_SHOW_DEMO_LOGIN=0
+   ```
+
+2. **Launch** — `docker compose up --build -d`. All services carry
+   `restart: unless-stopped` and health checks; the schema (including
+   migrations for upgrades from older databases) is applied automatically on
+   API startup. Skip the demo seed step in production.
+
+3. **Terminate TLS** — put a reverse proxy (Caddy, nginx, traefik, or your
+   platform's load balancer) in front of ports 3000 (web) and 8000 (API) for
+   your two hostnames. `PUBLIC_BASE_URL` must match the public API origin or
+   signed image URLs will not resolve.
+
+4. **Back up** the `postgres-data` (database) and `media-storage`
+   (raw + anonymized images) volumes. For object storage instead of the volume,
+   set `STORAGE_BACKEND=s3` with the `S3_*` variables.
+
+5. **Onboard schools** — accounts self-register at `/register`; each school's
+   registry, uploads, and review queue are isolated to their account.

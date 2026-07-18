@@ -14,6 +14,10 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+_INSECURE_JWT_SECRET = "change-me-in-production-please-32chars-min"
+_INSECURE_ADMIN_PASSWORD = "admin123"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
@@ -136,6 +140,31 @@ class Settings(BaseSettings):
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.strip().lower() in {"production", "prod", "live"}
+
+
+def validate_production_settings(config: Settings) -> List[str]:
+    """Return the list of insecure settings that must be fixed before go-live.
+
+    Empty outside production so local/dev setups keep working with zero config.
+    """
+    if not config.is_production:
+        return []
+    problems: List[str] = []
+    if config.jwt_secret == _INSECURE_JWT_SECRET or len(config.jwt_secret) < 32:
+        problems.append(
+            "JWT_SECRET must be a unique random value of at least 32 characters"
+        )
+    if config.admin_password == _INSECURE_ADMIN_PASSWORD or len(config.admin_password) < 12:
+        problems.append(
+            "ADMIN_PASSWORD must be changed from the default to 12+ characters"
+        )
+    if "*" in config.cors_origin_list:
+        problems.append("CORS_ORIGINS must list explicit origins, not '*'")
+    return problems
 
 
 @lru_cache
