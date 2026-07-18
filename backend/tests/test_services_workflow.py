@@ -113,3 +113,9 @@ def test_reprocessing_is_idempotent(db):
     media = process_media(db, media_id, detector=ground_truth_detector(boxes))
     # Old detections are replaced, not duplicated.
     assert len(media.detected_faces) == 2
+
+
+def test_pending_media_cannot_be_finalized_before_detection(db):
+    media_id, _boxes = _stage_group_media(db, [900001])
+    with pytest.raises(ValueError, match="cannot be reviewed while status is PENDING"):
+        apply_overrides(db, media_id, [], reviewer_id="reviewer-1", finalize=True)

@@ -24,8 +24,10 @@ function makeMedia(): MediaUploadDetail {
         cosine_distance_score: 0.02,
         inference_confidence: "HIGH",
         is_blurred_by_system: true,
-        is_blurred_override: false,
-        is_final_blurred: true,
+      is_blurred_override: false,
+      is_final_blurred: true,
+      requires_manual_review: false,
+      review_reason: "CONFIRMED_MATCH",
       },
     ],
   };

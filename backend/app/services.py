@@ -7,6 +7,7 @@ from a Celery worker without duplication.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import uuid
 from typing import List, Optional, Sequence, Tuple
 
 import cv2
@@ -15,18 +16,65 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .matching import match_embedding
-from .models import DetectedFace, MediaUpload, ProcessingStatus, Student
+from .models import DetectedFace, MediaUpload, ProcessingStatus, Student, StudentReference
 from .storage import PROCESSED_BUCKET, RAW_BUCKET, get_storage
 from .vision.pipeline import (
+    SFACE_EMBEDDING_MODEL,
     AnonymizationPipeline,
     DetectedRegion,
     DetectorFn,
+    assess_reference_quality,
     get_pipeline,
+    reference_quality_error,
 )
+from .vision.synthetic import encode_jpeg
 
 
 class NoFaceDetectedError(Exception):
     """Raised when enrollment is attempted on an image with no detectable face."""
+
+
+def migrate_legacy_references(db: Session) -> int:
+    """Create SFace templates for pre-upgrade real enrollments when possible.
+
+    Synthetic demo rows deliberately stay on their deterministic legacy model so
+    the generated demo remains reproducible.
+    """
+    migrated = 0
+    pipeline = get_pipeline()
+    if not pipeline.uses_sface:
+        return migrated
+    students = list(db.query(Student).filter(Student.reference_seed.is_(None)).all())
+    storage = get_storage()
+    for student in students:
+        if student.references:
+            continue
+        bucket, separator, key = student.reference_image_path.partition("/")
+        if not separator:
+            continue
+        try:
+            image = _decode_image(storage.load(bucket, key))
+            regions = pipeline.analyze(image)
+        except (FileNotFoundError, OSError, ValueError):
+            continue
+        if len(regions) != 1 or regions[0].embedding_model != SFACE_EMBEDDING_MODEL:
+            continue
+        region = regions[0]
+        quality = assess_reference_quality(image, region)
+        student.face_embedding = region.embedding
+        db.add(
+            StudentReference(
+                student_id=student.id,
+                image_path=student.reference_image_path,
+                face_embedding=region.embedding,
+                embedding_model=region.embedding_model,
+                quality_score=quality.score,
+            )
+        )
+        migrated += 1
+    if migrated:
+        db.commit()
+    return migrated
 
 
 def _decode_image(data: bytes) -> np.ndarray:
@@ -52,34 +100,76 @@ def enroll_student(
     student_id_number: str,
     grade_level: str,
     parent_consent_signed: bool,
-    image_bytes: bytes,
+    image_bytes: Optional[bytes] = None,
+    image_bytes_list: Optional[Sequence[bytes]] = None,
     detector: Optional[DetectorFn] = None,
     reference_seed: Optional[int] = None,
 ) -> Student:
-    """Register an opt-out student from a reference face image."""
-    image = _decode_image(image_bytes)
+    """Register an opt-out student from one or more reference face images."""
+    payloads = list(image_bytes_list or ([] if image_bytes is None else [image_bytes]))
+    if not payloads:
+        raise ValueError("At least one reference image is required")
+    if len(payloads) > settings.max_reference_images:
+        raise ValueError(f"A maximum of {settings.max_reference_images} reference images is allowed")
+
     pipeline = _pipeline_for(detector)
-    regions = pipeline.analyze(image)
-    if not regions:
-        raise NoFaceDetectedError("No face detected in the reference image")
-    # Use the largest detected face as the reference.
-    region = max(regions, key=lambda r: r.w * r.h)
+    analyzed: List[Tuple[np.ndarray, DetectedRegion, float]] = []
+    for index, payload in enumerate(payloads, start=1):
+        image = _decode_image(payload)
+        regions = pipeline.analyze(image)
+        if not regions:
+            raise NoFaceDetectedError(f"No face detected in reference image {index}")
+        if len(regions) != 1:
+            raise ValueError(
+                f"Reference image {index} contains {len(regions)} faces; upload one student per image"
+            )
+        region = regions[0]
+        quality = assess_reference_quality(image, region)
+        quality_error = reference_quality_error(quality)
+        if quality_error:
+            raise ValueError(f"Reference image {index}: {quality_error}")
+        analyzed.append((image, region, quality.score))
+
+    embedding_models = {region.embedding_model for _, region, _ in analyzed}
+    embedding_dimensions = {len(region.embedding) for _, region, _ in analyzed}
+    if len(embedding_models) != 1 or len(embedding_dimensions) != 1:
+        raise ValueError("Reference images were processed by incompatible embedding models")
+
+    vectors = np.asarray([region.embedding for _, region, _ in analyzed], dtype=np.float32)
+    centroid = vectors.mean(axis=0)
+    centroid_norm = float(np.linalg.norm(centroid))
+    if centroid_norm > 0:
+        centroid /= centroid_norm
 
     storage = get_storage()
-    key = f"{student_id_number}/reference.jpg"
-    storage.save(RAW_BUCKET, key, image_bytes)
-
+    student_uuid = str(uuid.uuid4())
+    stored_paths: List[str] = []
+    for image, _region, _quality_score in analyzed:
+        key = f"students/{student_uuid}/references/{uuid.uuid4()}.jpg"
+        storage.save(RAW_BUCKET, key, encode_jpeg(image))
+        stored_paths.append(f"{RAW_BUCKET}/{key}")
     student = Student(
+        id=student_uuid,
         first_name=first_name,
         last_name=last_name,
         student_id_number=student_id_number,
         grade_level=grade_level,
         parent_consent_signed=parent_consent_signed,
-        reference_image_path=f"{RAW_BUCKET}/{key}",
-        face_embedding=region.embedding,
+        reference_image_path=stored_paths[0],
+        face_embedding=centroid.tolist(),
         reference_seed=reference_seed,
     )
     db.add(student)
+    for stored_path, (_image, region, quality_score) in zip(stored_paths, analyzed):
+        db.add(
+            StudentReference(
+                student_id=student_uuid,
+                image_path=stored_path,
+                face_embedding=region.embedding,
+                embedding_model=region.embedding_model,
+                quality_score=quality_score,
+            )
+        )
     db.commit()
     db.refresh(student)
     return student
@@ -94,8 +184,6 @@ def _render_and_store(
     pipeline: AnonymizationPipeline,
 ) -> str:
     rendered = pipeline.render_anonymized(image, regions, blur_flags)
-    from .vision.synthetic import encode_jpeg
-
     key = f"{media.id}/anonymized.jpg"
     get_storage().save(PROCESSED_BUCKET, key, encode_jpeg(rendered))
     return f"{PROCESSED_BUCKET}/{key}"
@@ -132,7 +220,11 @@ def process_media(
 
         blur_flags: List[bool] = []
         for region in regions:
-            match = match_embedding(db, region.embedding)
+            match = match_embedding(
+                db,
+                region.embedding,
+                embedding_model=region.embedding_model,
+            )
             nx, ny, nw, nh = region.norm_box
             face = DetectedFace(
                 media_upload_id=media.id,
@@ -145,11 +237,11 @@ def process_media(
                 matched_student_id=match.student_id,
                 cosine_distance_score=match.distance,
                 inference_confidence=match.confidence,
-                is_blurred_by_system=match.is_match,
+                is_blurred_by_system=match.should_blur,
                 is_blurred_override=False,
             )
             db.add(face)
-            blur_flags.append(match.is_match)
+            blur_flags.append(match.should_blur)
 
         processed_path = _render_and_store(media, image, regions, blur_flags, pipeline)
         media.storage_path_processed = processed_path
@@ -181,6 +273,13 @@ def apply_overrides(
     media = db.get(MediaUpload, media_id)
     if media is None:
         raise ValueError(f"MediaUpload {media_id} not found")
+    if media.workflow_status not in {
+        ProcessingStatus.REVIEW_REQUIRED,
+        ProcessingStatus.COMPLETED,
+    }:
+        raise ValueError(
+            f"MediaUpload {media_id} cannot be reviewed while status is {media.workflow_status.value}"
+        )
 
     faces_by_id = {f.id: f for f in media.detected_faces}
     for face_id, override_state in overrides:

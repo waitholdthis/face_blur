@@ -65,6 +65,9 @@ start_local() {
   pip install -q --upgrade pip
   pip install -q -r backend/requirements-dev.txt
 
+  say "Installing verified YuNet + SFace vision models…"
+  (cd backend && python -m app.scripts.download_models)
+
   say "Seeding demo data…"
   (cd backend && python -m app.scripts.seed_demo)
 

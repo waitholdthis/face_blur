@@ -23,7 +23,9 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Run tests with coverage
         working-directory: backend
-        run: pytest --cov=app --cov-report=term-missing
+        run: |
+          python -m app.scripts.download_models
+          pytest --cov=app --cov-report=term-missing
 
   frontend:
     name: Frontend (typecheck, test, build)

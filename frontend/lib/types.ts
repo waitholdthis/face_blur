@@ -21,6 +21,8 @@ export interface DetectedFace {
   is_blurred_by_system: boolean;
   is_blurred_override: boolean;
   is_final_blurred: boolean;
+  requires_manual_review: boolean;
+  review_reason: "CONFIRMED_MATCH" | "AMBIGUOUS_MATCH" | "NO_REGISTRY_MATCH";
 }
 
 export interface MediaUploadDetail {
@@ -53,6 +55,7 @@ export interface Student {
   grade_level: string;
   parent_consent_signed: boolean;
   reference_image_path: string;
+  reference_count: number;
   created_at: string;
   updated_at: string;
 }

@@ -10,6 +10,8 @@ htmlcov/
 backend/storage/
 backend/_live_storage/
 backend/_seed_storage/
+backend/app/vision/models/*.onnx
+backend/app/vision/models/*.download
 
 # Node / Next.js
 node_modules/

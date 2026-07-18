@@ -19,7 +19,7 @@ import os
 import time
 from abc import ABC, abstractmethod
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from .config import settings
 
@@ -62,15 +62,21 @@ class LocalStorage(StorageBackend):
         self.base_dir = os.path.abspath(base_dir)
         os.makedirs(self.base_dir, exist_ok=True)
 
-    def _path(self, bucket: str, key: str) -> str:
-        # Prevent path traversal in keys.
-        safe_key = key.replace("..", "_")
-        path = os.path.join(self.base_dir, bucket, safe_key)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+    def _path(self, bucket: str, key: str, *, create_parent: bool = False) -> str:
+        bucket_root = os.path.abspath(os.path.join(self.base_dir, bucket))
+        path = os.path.abspath(os.path.join(bucket_root, key))
+        try:
+            contained = os.path.commonpath([bucket_root, path]) == bucket_root
+        except ValueError:
+            contained = False
+        if not contained:
+            raise ValueError("Storage key escapes its bucket")
+        if create_parent:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
         return path
 
     def save(self, bucket: str, key: str, data: bytes) -> str:
-        path = self._path(bucket, key)
+        path = self._path(bucket, key, create_parent=True)
         with open(path, "wb") as fh:
             fh.write(data)
         return f"{bucket}/{key}"
@@ -87,7 +93,9 @@ class LocalStorage(StorageBackend):
         exp = str(int(time.time()) + ttl)
         token = _sign(f"{bucket}/{key}:{exp}")
         query = urlencode({"exp": exp, "token": token})
-        return f"{settings.public_base_url}/api/v1/assets/{bucket}/{key}?{query}"
+        encoded_bucket = quote(bucket, safe="")
+        encoded_key = quote(key, safe="/")
+        return f"{settings.public_base_url}/api/v1/assets/{encoded_bucket}/{encoded_key}?{query}"
 
 
 class S3Storage(StorageBackend):  # pragma: no cover - exercised only with real S3

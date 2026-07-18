@@ -1,21 +1,16 @@
-"""Face-to-student matching via cosine distance.
-
-Portable implementation that works on any SQL backend by loading candidate
-embeddings and computing cosine distance in NumPy. On PostgreSQL with
-``pgvector`` this can be replaced by an indexed ``<=>`` query; the public
-interface (:func:`match_embedding`) would be unchanged.
-"""
+"""Open-set student matching across multiple enrollment templates."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import MatchConfidence, Student
+from .models import MatchConfidence, Student, StudentReference
+from .vision.pipeline import LEGACY_EMBEDDING_MODEL, SFACE_EMBEDDING_MODEL
 
 
 @dataclass
@@ -24,57 +19,123 @@ class MatchResult:
     distance: Optional[float]
     confidence: MatchConfidence
     is_match: bool
+    should_blur: bool = False
+    ambiguous: bool = False
+    runner_up_distance: Optional[float] = None
 
 
 def cosine_distance(a: Sequence[float], b: Sequence[float]) -> float:
-    """Cosine distance in [0, 2]; 0 == identical direction."""
-    va = np.asarray(a, dtype=np.float64)
-    vb = np.asarray(b, dtype=np.float64)
-    na = np.linalg.norm(va)
-    nb = np.linalg.norm(vb)
-    if na == 0 or nb == 0:
+    """Cosine distance in [0, 2]; zero means identical direction."""
+    first = np.asarray(a, dtype=np.float64)
+    second = np.asarray(b, dtype=np.float64)
+    if first.shape != second.shape:
+        return float("inf")
+    first_norm = np.linalg.norm(first)
+    second_norm = np.linalg.norm(second)
+    if first_norm == 0 or second_norm == 0:
         return 1.0
-    return float(1.0 - np.dot(va, vb) / (na * nb))
+    return float(1.0 - np.dot(first, second) / (first_norm * second_norm))
 
 
-def classify_confidence(distance: float) -> MatchConfidence:
-    if distance <= settings.confidence_high_max:
+def _model_thresholds(model: str) -> Tuple[float, float, float, float]:
+    if model == SFACE_EMBEDDING_MODEL:
+        return (
+            settings.sface_match_threshold,
+            settings.sface_confidence_high_max,
+            settings.sface_confidence_medium_max,
+            settings.sface_confidence_low_max,
+        )
+    return (
+        settings.match_threshold,
+        settings.confidence_high_max,
+        settings.confidence_medium_max,
+        settings.confidence_low_max,
+    )
+
+
+def classify_confidence(
+    distance: float, embedding_model: str = LEGACY_EMBEDDING_MODEL
+) -> MatchConfidence:
+    _threshold, high_max, medium_max, low_max = _model_thresholds(embedding_model)
+    if distance <= high_max:
         return MatchConfidence.HIGH
-    if distance <= settings.confidence_medium_max:
+    if distance <= medium_max:
         return MatchConfidence.MEDIUM
-    if distance <= settings.confidence_low_max:
+    if distance <= low_max:
         return MatchConfidence.LOW
     return MatchConfidence.NONE
+
+
+def _templates_by_student(
+    db: Session, embedding_model: str, dimension: int
+) -> Dict[str, List[Sequence[float]]]:
+    students: List[Student] = list(db.execute(select(Student)).scalars())
+    references: List[StudentReference] = list(
+        db.execute(select(StudentReference)).scalars()
+    )
+    grouped: Dict[str, List[Sequence[float]]] = {student.id: [] for student in students}
+    for reference in references:
+        if (
+            reference.embedding_model == embedding_model
+            and len(reference.face_embedding) == dimension
+        ):
+            grouped.setdefault(reference.student_id, []).append(reference.face_embedding)
+
+    # Legacy rows have no StudentReference records. They remain comparable only
+    # to embeddings produced by the same descriptor and dimension.
+    if embedding_model == LEGACY_EMBEDDING_MODEL:
+        for student in students:
+            if not grouped[student.id] and len(student.face_embedding) == dimension:
+                grouped[student.id].append(student.face_embedding)
+    return {student_id: templates for student_id, templates in grouped.items() if templates}
 
 
 def match_embedding(
     db: Session,
     embedding: Sequence[float],
     threshold: Optional[float] = None,
+    embedding_model: Optional[str] = None,
 ) -> MatchResult:
-    """Find the closest opt-out student for a face embedding.
+    """Match a face while rejecting weak or ambiguous open-set candidates.
 
-    A match (``is_match=True``) means the face belongs to a student in the
-    no-consent registry and must therefore be blurred.
+    A candidate inside the distance threshold but too close to a runner-up is
+    conservatively blurred without assigning an identity. This avoids exposing a
+    possible opt-out student while preventing a low-margin identity assertion.
     """
-    threshold = settings.match_threshold if threshold is None else threshold
-    students: List[Student] = list(db.execute(select(Student)).scalars())
-    if not students:
+    model = embedding_model or (
+        SFACE_EMBEDDING_MODEL if len(embedding) == 128 else LEGACY_EMBEDDING_MODEL
+    )
+    configured_threshold, _high, _medium, _low = _model_thresholds(model)
+    active_threshold = configured_threshold if threshold is None else threshold
+    templates = _templates_by_student(db, model, len(embedding))
+    if not templates:
         return MatchResult(None, None, MatchConfidence.NONE, False)
 
-    best_student: Optional[Student] = None
-    best_distance = float("inf")
-    for student in students:
-        d = cosine_distance(embedding, student.face_embedding)
-        if d < best_distance:
-            best_distance = d
-            best_student = student
+    ranked: List[Tuple[float, str]] = []
+    for student_id, student_templates in templates.items():
+        distances = [cosine_distance(embedding, template) for template in student_templates]
+        ranked.append((min(distances), student_id))
+    ranked.sort(key=lambda candidate: candidate[0])
 
-    is_match = best_distance <= threshold
-    confidence = classify_confidence(best_distance) if is_match else MatchConfidence.NONE
+    best_distance, best_student_id = ranked[0]
+    runner_up = ranked[1][0] if len(ranked) > 1 else float("inf")
+    within_threshold = best_distance <= active_threshold
+    margin = runner_up - best_distance
+    ambiguous = within_threshold and margin < settings.match_min_margin
+    confirmed = within_threshold and not ambiguous
+    confidence = (
+        MatchConfidence.LOW
+        if ambiguous
+        else classify_confidence(best_distance, model)
+        if confirmed
+        else MatchConfidence.NONE
+    )
     return MatchResult(
-        student_id=best_student.id if (is_match and best_student) else None,
+        student_id=best_student_id if confirmed else None,
         distance=round(best_distance, 4),
         confidence=confidence,
-        is_match=is_match,
+        is_match=confirmed,
+        should_blur=within_threshold,
+        ambiguous=ambiguous,
+        runner_up_distance=(round(runner_up, 4) if np.isfinite(runner_up) else None),
     )

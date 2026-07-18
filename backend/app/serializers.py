@@ -11,6 +11,12 @@ from .storage import get_storage
 def face_to_out(face: DetectedFace) -> DetectedFaceOut:
     student = face.matched_student
     name = f"{student.first_name} {student.last_name}" if student else None
+    if face.matched_student_id:
+        review_reason = "CONFIRMED_MATCH"
+    elif face.is_blurred_by_system:
+        review_reason = "AMBIGUOUS_MATCH"
+    else:
+        review_reason = "NO_REGISTRY_MATCH"
     return DetectedFaceOut(
         id=face.id,
         box_x=float(face.box_x),
@@ -27,6 +33,8 @@ def face_to_out(face: DetectedFace) -> DetectedFaceOut:
         is_blurred_by_system=face.is_blurred_by_system,
         is_blurred_override=face.is_blurred_override,
         is_final_blurred=face.is_final_blurred,
+        requires_manual_review=review_reason != "CONFIRMED_MATCH",
+        review_reason=review_reason,
     )
 
 

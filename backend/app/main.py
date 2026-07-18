@@ -10,6 +10,7 @@ from .auth import ensure_admin_user
 from .config import settings
 from .database import SessionLocal, init_db
 from .routers import assets, auth, media, students
+from .services import migrate_legacy_references
 
 
 @asynccontextmanager
@@ -19,6 +20,7 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         ensure_admin_user(db)
+        migrate_legacy_references(db)
     finally:
         db.close()
     yield

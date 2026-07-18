@@ -46,6 +46,7 @@ class StudentOut(BaseModel):
     grade_level: str
     parent_consent_signed: bool
     reference_image_path: str
+    reference_count: int = 1
     created_at: datetime
     updated_at: datetime
 
@@ -66,6 +67,8 @@ class DetectedFaceOut(BaseModel):
     is_blurred_by_system: bool
     is_blurred_override: bool
     is_final_blurred: bool
+    requires_manual_review: bool = False
+    review_reason: str = "CONFIRMED_MATCH"
 
 
 # --- Media ---

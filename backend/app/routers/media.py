@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 import uuid
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
@@ -49,12 +50,16 @@ def upload_group_media(
     if file.content_type and file.content_type.lower() not in _ALLOWED_CONTENT:
         raise HTTPException(status_code=415, detail=f"Unsupported media type: {file.content_type}")
 
-    data = file.file.read()
+    data = file.file.read(settings.max_upload_bytes + 1)
     if not data:
         raise HTTPException(status_code=400, detail="Empty upload")
+    if len(data) > settings.max_upload_bytes:
+        raise HTTPException(status_code=413, detail="Upload exceeds the 20 MB limit")
 
     media_id = str(uuid.uuid4())
-    key = f"{media_id}/{file.filename or 'upload.jpg'}"
+    suffix = Path(file.filename or "upload.jpg").suffix.lower()
+    suffix = suffix if suffix in {".jpg", ".jpeg", ".png", ".webp", ".bmp"} else ".jpg"
+    key = f"{media_id}/upload{suffix}"
     get_storage().save(RAW_BUCKET, key, data)
 
     media = MediaUpload(
@@ -176,6 +181,8 @@ def commit_review(
         )
     except KeyError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
     processed_url = media_to_detail(media).processed_url
     return ReviewCommitResponse(

@@ -107,6 +107,35 @@ class Student(Base):
         DateTime(timezone=True), default=_now, onupdate=_now, nullable=False
     )
 
+    references: Mapped[List["StudentReference"]] = relationship(
+        back_populates="student",
+        cascade="all, delete-orphan",
+        order_by="StudentReference.created_at",
+    )
+
+    @property
+    def reference_count(self) -> int:
+        # Legacy rows predate the reference table but still contain one template.
+        return len(self.references) if self.references else 1
+
+
+class StudentReference(Base):
+    """One quality-checked enrollment image/template for an opted-out student."""
+
+    __tablename__ = "student_references"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    student_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    image_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    face_embedding: Mapped[List[float]] = mapped_column(Vector, nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String(64), nullable=False)
+    quality_score: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    student: Mapped["Student"] = relationship(back_populates="references")
+
 
 class MediaUpload(Base):
     __tablename__ = "media_uploads"

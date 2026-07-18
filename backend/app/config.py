@@ -7,6 +7,7 @@ external infrastructure. Override anything for a production deployment.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import List
 
 from pydantic import Field
@@ -56,21 +57,53 @@ class Settings(BaseSettings):
     # Maximum cosine *distance* for a detected face to be considered a match to
     # an opt-out student (lower distance == more similar). 0.0 == identical.
     #
-    # NOTE: this is calibrated for the built-in lightweight descriptor, whose
-    # same/different-identity distances are more compressed than a deep model's.
-    # If you swap in a production embedder (e.g. ArcFace), recalibrate — a
-    # typical ArcFace cosine-distance threshold is ~0.35.
+    # Legacy threshold retained for synthetic tests and installations where the
+    # DNN models have not been downloaded.
     match_threshold: float = Field(default=0.10)
     # Distance bands used to label match confidence for the reviewer.
     confidence_high_max: float = Field(default=0.04)
     confidence_medium_max: float = Field(default=0.07)
     confidence_low_max: float = Field(default=0.10)
 
-    detector_backend: str = Field(default="haar")  # "haar" only for now
+    # Production defaults: OpenCV YuNet detection + SFace recognition. The
+    # lightweight Haar/pixel pipeline remains an explicit offline fallback.
+    detector_backend: str = Field(default="yunet")
     detector_scale_factor: float = Field(default=1.1)
     detector_min_neighbors: int = Field(default=3)
     detector_min_size: int = Field(default=40)
     embedding_dim: int = Field(default=512)
+    vision_model_dir: str = Field(
+        default=str(Path(__file__).resolve().parent / "vision" / "models")
+    )
+    yunet_model_name: str = Field(default="face_detection_yunet_2023mar.onnx")
+    sface_model_name: str = Field(default="face_recognition_sface_2021dec.onnx")
+    yunet_score_threshold: float = Field(default=0.75)
+    yunet_nms_threshold: float = Field(default=0.30)
+    yunet_top_k: int = Field(default=5000)
+    vision_max_dimension: int = Field(default=1920)
+
+    # SFace returns cosine similarity; this application stores cosine distance
+    # (1 - similarity), so smaller values are better. These conservative starter
+    # values must still be calibrated against an authorized local validation set.
+    sface_match_threshold: float = Field(default=0.45)
+    sface_confidence_high_max: float = Field(default=0.25)
+    sface_confidence_medium_max: float = Field(default=0.35)
+    sface_confidence_low_max: float = Field(default=0.45)
+    match_min_margin: float = Field(default=0.08)
+
+    # Enrollment quality and upload limits.
+    max_reference_images: int = Field(default=5)
+    max_upload_bytes: int = Field(default=20 * 1024 * 1024)
+    reference_min_face_pixels: int = Field(default=64)
+    reference_min_sharpness: float = Field(default=20.0)
+    reference_min_brightness: float = Field(default=35.0)
+    reference_max_brightness: float = Field(default=225.0)
+
+    # Redaction covers more than the detector box to include hairline and ears.
+    # Modes: "hybrid" (default), "pixelate", "blur", or "solid".
+    redaction_padding_ratio: float = Field(default=0.25)
+    redaction_mode: str = Field(default="hybrid")
+    redaction_pixel_blocks: int = Field(default=10)
 
     # --- Celery / Redis ---
     redis_url: str = Field(default="redis://localhost:6379/0")

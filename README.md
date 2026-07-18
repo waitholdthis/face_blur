@@ -66,6 +66,7 @@ and Celery in *eager* (synchronous) mode so no broker is required.
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
+python -m app.scripts.download_models  # verified YuNet + SFace ONNX assets
 python -m app.scripts.seed_demo        # creates ./face_blur.db + demo data
 uvicorn app.main:app --reload          # http://localhost:8000
 
@@ -90,9 +91,10 @@ and watch the full detect → match → blur → review flow — no photos requi
 2. **Upload a group photo.** It is streamed to private storage, a tracking record
    is created, and the anonymization job is queued (Redis + Celery in production,
    inline in dev).
-3. **Automated pass.** The worker detects every face, computes an embedding, and
-   runs a cosine-similarity search against the opt-out registry. Faces that match
-   an opted-out student are flagged (`is_blurred_by_system = true`).
+3. **Automated pass.** The worker uses YuNet to detect faces and five landmarks,
+   aligns each crop, computes an SFace embedding, and searches all quality-checked
+   templates in the opt-out registry. Confirmed and ambiguous near-matches are
+   conservatively flagged (`is_blurred_by_system = true`).
 4. **Human review.** The reviewer opens the image, sees every detection as a
    colored box (red = will be blurred), and clicks any box to override the
    decision. The final decision is `XOR(system_flag, human_override)` — so the
@@ -135,7 +137,7 @@ FastAPI + SQLAlchemy + Celery. Key modules (`backend/app/`):
 |---|---|
 | `config.py` | Environment-driven settings with safe defaults |
 | `models.py` | ORM: `User`, `Student`, `MediaUpload`, `DetectedFace` (+ XOR `is_final_blurred`) |
-| `vision/pipeline.py` | Haar face detection, deterministic embedding, Gaussian-blur anonymization |
+| `vision/pipeline.py` | YuNet detection, SFace alignment/embeddings, enrollment quality gates, padded redaction |
 | `vision/synthetic.py` | Detectable synthetic faces for demo/tests (no real people) |
 | `matching.py` | Cosine-distance search + confidence banding |
 | `storage.py` | Pluggable object storage: local (signed URLs) or S3 (presigned) |
@@ -167,7 +169,7 @@ in `lib/`; the `evaluateFinalBlur` XOR helper mirrors the backend exactly.
 
 ## Testing
 
-**Backend — 35 tests, ~95% coverage**, exercising the *real* vision pipeline
+**Backend — 47 tests**, exercising the vision pipeline
 (detection, embeddings, blur), matching, the XOR override logic, auth, signed-URL
 access control, and the full upload → process → review → finalize workflow.
 
@@ -204,6 +206,10 @@ Highlights:
 | `CELERY_TASK_ALWAYS_EAGER` | `true` | set `false` + run a worker in prod |
 | `REDIS_URL` | `redis://localhost:6379/0` | Celery broker/result backend |
 | `MATCH_THRESHOLD` | `0.10` | max cosine distance for a match (see design notes) |
+| `SFACE_MATCH_THRESHOLD` | `0.45` | conservative starter distance; calibrate locally |
+| `MATCH_MIN_MARGIN` | `0.08` | required separation from the runner-up identity |
+| `REDACTION_PADDING_RATIO` | `0.25` | expands coverage around the detector box |
+| `REDACTION_MODE` | `hybrid` | `hybrid`, `pixelate`, `blur`, or `solid` |
 | `JWT_SECRET` / `ADMIN_PASSWORD` | dev values | **change for any real deployment** |
 
 ---
@@ -211,31 +217,38 @@ Highlights:
 <a name="design-notes"></a>
 ## Design notes & honesty about the vision model
 
-This project is a faithful, runnable implementation of the blueprint's
-*architecture and workflow*. A couple of deliberate, clearly-scoped choices make
-it run out of the box:
+The production path uses OpenCV's YuNet detector and SFace recognizer. The
+download script verifies pinned SHA-256 checksums; inference stays local and runs
+on CPU through OpenCV DNN. A Haar/pixel descriptor remains only as a degraded
+fallback and for deterministic synthetic tests.
 
-- **Face embeddings.** The blueprint calls for a deep metric model (ArcFace,
-  512-d). To keep the stack dependency-free (no GPU, no multi-hundred-MB model
-  downloads), `vision/pipeline.py` ships a lightweight, deterministic descriptor
-  with the *same interface*. It performs real same-vs-different identity
-  matching, and you can drop in ArcFace by replacing one method
-  (`AnonymizationPipeline.embed`) and recalibrating `MATCH_THRESHOLD` (~0.35 for
-  ArcFace). The default threshold (`0.10`) is calibrated for the built-in
-  descriptor.
-- **Detection.** Uses OpenCV's bundled Haar cascade — real detection on real
-  photos, no downloads. Synthetic demo/test imagery (which we generate and thus
-  know the exact face boxes for) is paired with a ground-truth detector so the
-  rest of the pipeline is exercised deterministically; real uploads always use
-  Haar.
+- **Alignment.** YuNet's five landmarks are passed through SFace `alignCrop`
+  before feature extraction, reducing sensitivity to face-box shifts and pose.
+- **Multiple references.** Enrollment accepts one to five single-face photos.
+  Each is checked for face count, size, sharpness, brightness, and detector
+  confidence, then stored as an independent matching template.
+- **Open-set safety.** Matching requires a threshold and a minimum margin from
+  the runner-up. Low-margin candidates are blurred for privacy but are not
+  assigned a student identity; the review UI labels them as ambiguous.
+- **Redaction.** Final redaction expands the face box by 25% and defaults to a
+  pixelation-plus-blur hybrid. Solid and other modes are configurable.
+- **Calibration.** Generic thresholds are not a substitute for validation on
+  authorized, representative school imagery. Put local images under
+  `references/<student-id>/` and `queries/<student-id>/` (with unknown people in
+  `queries/_unknown/`), then run:
+
+  ```bash
+  cd backend
+  python -m app.scripts.evaluate_vision /path/to/dataset --output report.json
+  ```
 - **Vector search.** Embeddings are stored portably (JSON) and matched in NumPy,
   so the identical schema runs on SQLite and PostgreSQL. The Compose stack uses
   `pgvector` and enables the extension so you can migrate to an indexed
   `vector(512)` column and `<=>` search without changing the app's interface.
 
-None of these affect the correctness of the workflow, the API, the review UI, or
-the data model — only the accuracy ceiling of the matcher, which is a one-file
-swap.
+The evaluator reports detection failures, known-student identification rate,
+unknown-person false matches, ambiguous cases, and genuine/impostor distance
+distributions without sending images off the machine.
 
 ---
 

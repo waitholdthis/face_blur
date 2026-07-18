@@ -157,6 +157,22 @@ export default function ReviewQueue({ media, onCommit, committing }: Props) {
                 {evaluateFinalBlur(selected) ? "🔴 Blurred" : "🟢 Visible"}
                 {selected.is_blurred_override ? " (overridden)" : ""}
               </p>
+              {selected.requires_manual_review && (
+                <p
+                  style={{
+                    fontSize: 12,
+                    margin: "9px 0 0",
+                    padding: "7px 9px",
+                    borderRadius: 6,
+                    color: selected.review_reason === "AMBIGUOUS_MATCH" ? "#92400e" : "#475569",
+                    background: selected.review_reason === "AMBIGUOUS_MATCH" ? "#fef3c7" : "#f1f5f9",
+                  }}
+                >
+                  {selected.review_reason === "AMBIGUOUS_MATCH"
+                    ? "Possible registry match — blurred for safety; confirm manually."
+                    : "No confident registry match — inspect before finalizing."}
+                </p>
+              )}
               <button
                 className="btn dark"
                 style={{ width: "100%", marginTop: 10 }}

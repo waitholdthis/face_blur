@@ -29,6 +29,14 @@ export default function ReviewPage() {
     load();
   }, [load]);
 
+  useEffect(() => {
+    if (media?.workflow_status !== "PENDING" && media?.workflow_status !== "PROCESSING") {
+      return;
+    }
+    const timer = window.setInterval(load, 1500);
+    return () => window.clearInterval(timer);
+  }, [load, media?.workflow_status]);
+
   const commit = async (overrides: OverrideEntry[], finalize: boolean) => {
     setCommitting(true);
     setError(null);
@@ -70,6 +78,13 @@ export default function ReviewPage() {
           </div>
           {media.workflow_status === "FAILED" ? (
             <div className="error">Processing failed: {media.error_detail}</div>
+          ) : media.workflow_status === "PENDING" || media.workflow_status === "PROCESSING" ? (
+            <div className="card">
+              <p style={{ margin: "0 0 4px", fontWeight: 700 }}>Analyzing faces…</p>
+              <p className="muted" style={{ margin: 0 }}>
+                Detection and registry matching are still running. This page will update automatically.
+              </p>
+            </div>
           ) : media.detected_faces.length === 0 ? (
             <div className="card">
               <p className="muted">No faces were detected in this image.</p>

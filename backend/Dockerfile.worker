@@ -18,6 +18,7 @@ RUN if [ -n "$EXTRA_CA_BUNDLE" ]; then \
     pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+RUN python -m app.scripts.download_models
 
 # Concurrency 2 keeps memory modest for the CV pipeline; tune for your hosts.
 CMD ["celery", "-A", "app.celery_app", "worker", "--loglevel=info", "--concurrency=2"]

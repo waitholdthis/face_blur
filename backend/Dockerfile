@@ -24,6 +24,7 @@ RUN if [ -n "$EXTRA_CA_BUNDLE" ]; then \
     pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+RUN python -m app.scripts.download_models
 
 EXPOSE 8000
 

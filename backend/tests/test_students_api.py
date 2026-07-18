@@ -25,6 +25,29 @@ def test_enroll_student_from_photo(client, auth_headers):
     assert body["student_id_number"] == "S-9001"
     assert body["parent_consent_signed"] is False
     assert body["reference_image_path"]
+    assert body["reference_count"] == 1
+
+
+def test_enroll_student_with_multiple_reference_photos(client, auth_headers):
+    first, _ = reference_face(101, texture=False)
+    second, _ = reference_face(101, texture=False)
+    resp = client.post(
+        "/api/v1/students",
+        headers=auth_headers,
+        data={
+            "first_name": "Multi",
+            "last_name": "Photo",
+            "student_id_number": "S-MULTI",
+            "grade_level": "5",
+            "parent_consent_signed": "false",
+        },
+        files=[
+            ("reference_images", ("front.jpg", first, "image/jpeg")),
+            ("reference_images", ("angle.jpg", second, "image/jpeg")),
+        ],
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["reference_count"] == 2
 
 
 def test_list_and_get_students(client, auth_headers):

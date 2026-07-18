@@ -15,7 +15,7 @@ export default function StudentsPage() {
     student_id_number: "",
     grade_level: "",
   });
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -31,7 +31,7 @@ export default function StudentsPage() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!file) {
+    if (files.length === 0) {
       setError("A reference photo is required to enroll a student.");
       return;
     }
@@ -44,10 +44,10 @@ export default function StudentsPage() {
       fd.append("student_id_number", form.student_id_number);
       fd.append("grade_level", form.grade_level);
       fd.append("parent_consent_signed", "false");
-      fd.append("reference_image", file);
+      files.forEach((file) => fd.append("reference_images", file));
       await api.createStudent(fd);
       setForm({ first_name: "", last_name: "", student_id_number: "", grade_level: "" });
-      setFile(null);
+      setFiles([]);
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Enrollment failed");
@@ -107,13 +107,18 @@ export default function StudentsPage() {
               onChange={(e) => setForm({ ...form, grade_level: e.target.value })}
               required
             />
-            <label className="label">Reference photo (single face)</label>
+            <label className="label">Reference photos (1–5, one face each)</label>
             <input
               className="input"
               type="file"
               accept="image/*"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              multiple
+              onChange={(e) => setFiles(Array.from(e.target.files ?? []).slice(0, 5))}
             />
+            <p className="muted" style={{ fontSize: 12, margin: "7px 0 0" }}>
+              Add a few clear angles when possible. Blurry, dark, or multi-person photos are rejected.
+              {files.length > 0 && ` ${files.length} selected.`}
+            </p>
             <button className="btn" style={{ width: "100%", marginTop: 18 }} disabled={busy}>
               {busy ? "Enrolling…" : "Enroll student"}
             </button>
@@ -132,6 +137,7 @@ export default function StudentsPage() {
                   <th>Name</th>
                   <th>Student ID</th>
                   <th>Grade</th>
+                  <th>References</th>
                   <th></th>
                 </tr>
               </thead>
@@ -143,6 +149,7 @@ export default function StudentsPage() {
                     </td>
                     <td>{s.student_id_number}</td>
                     <td>{s.grade_level}</td>
+                    <td>{s.reference_count}</td>
                     <td>
                       <button
                         className="btn danger"
