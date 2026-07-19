@@ -21,7 +21,7 @@ export default function Nav() {
 
   return (
     <nav className="nav">
-      <span className="brand">🛡️ Anonymization Portal</span>
+      <span className="brand">🛡️ Classmoment</span>
       {links.map((l) => (
         <Link
           key={l.href}

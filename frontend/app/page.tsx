@@ -27,7 +27,7 @@ const steps = [
   {
     number: "02",
     title: "Upload event photos",
-    body: "Drop in photos from games, assemblies, classrooms, or field trips. FaceBlur checks every detected face against your list.",
+    body: "Drop in photos from games, assemblies, classrooms, or field trips. Classmoment checks every detected face against your list.",
     label: "Automatic matching",
   },
   {
@@ -45,9 +45,9 @@ export default function Home() {
 
       <header className="landing-nav-wrap">
         <nav className="landing-nav" aria-label="Main navigation">
-          <Link className="landing-brand" href="/" aria-label="FaceBlur home">
+          <Link className="landing-brand" href="/" aria-label="Classmoment home">
             <span className="landing-brand-mark"><ShieldIcon /></span>
-            <span>FaceBlur</span>
+            <span>Classmoment</span>
           </Link>
           <div className="landing-nav-links">
             <a href="#how-it-works">How it works</a>
@@ -65,7 +65,7 @@ export default function Home() {
               <div className="landing-eyebrow"><span /> Built for student privacy teams</div>
               <h1>Share the moment.<span>Protect every student.</span></h1>
               <p className="landing-hero-lede">
-                FaceBlur finds students on your no-photo list and automatically
+                Classmoment finds students on your no-photo list and automatically
                 blurs their faces before school photos are shared.
               </p>
               <div className="landing-hero-actions">
@@ -169,7 +169,7 @@ export default function Home() {
         <section className="landing-privacy" id="privacy">
           <div className="landing-privacy-inner">
             <div className="landing-privacy-mark"><ShieldIcon /></div>
-            <div className="landing-privacy-copy"><span className="landing-kicker">Privacy is the product</span><h2>Protection that does not stop at face matching</h2><p>FaceBlur separates raw originals from approved exports, uses signed access links, and keeps a person in control of the final result.</p></div>
+            <div className="landing-privacy-copy"><span className="landing-kicker">Privacy is the product</span><h2>Protection that does not stop at face matching</h2><p>Classmoment separates raw originals from approved exports, uses signed access links, and keeps a person in control of the final result.</p></div>
             <div className="landing-assurance-list">
               <div><CheckIcon /><span>Raw originals stay in private storage</span></div>
               <div><CheckIcon /><span>Every automated decision can be reviewed</span></div>
@@ -185,7 +185,7 @@ export default function Home() {
       </main>
 
       <footer className="landing-footer">
-        <div><Link className="landing-brand" href="/"><span className="landing-brand-mark"><ShieldIcon /></span><span>FaceBlur</span></Link><p>Privacy-first photo sharing for schools and youth organizations.</p></div>
+        <div><Link className="landing-brand" href="/"><span className="landing-brand-mark"><ShieldIcon /></span><span>Classmoment</span></Link><p>Privacy-first photo sharing for schools and youth organizations.</p></div>
         <div className="landing-footer-links"><a href="#how-it-works">How it works</a><a href="#privacy">Privacy</a><Link href="/login">Portal login</Link></div>
         <span className="landing-footer-note">Human-reviewed. Privacy-minded. Share-ready.</span>
       </footer>

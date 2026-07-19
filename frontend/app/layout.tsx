@@ -5,7 +5,7 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"], display: "swap" });
 
 export const metadata: Metadata = {
-  title: "FaceBlur | Safer photo sharing for schools",
+  title: "Classmoment | Safer photo sharing for schools",
   description:
     "Automatically find and blur students on your no-photo list before school photos are shared.",
 };

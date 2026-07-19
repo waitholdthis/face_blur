@@ -41,7 +41,7 @@ export default function LoginPage() {
       }}
     >
       <div className="card" style={{ width: 380, maxWidth: "100%" }}>
-        <h1 style={{ margin: "0 0 4px", fontSize: 20 }}>🛡️ Anonymization Portal</h1>
+        <h1 style={{ margin: "0 0 4px", fontSize: 20 }}>🛡️ Classmoment</h1>
         <p className="muted" style={{ marginTop: 0 }}>
           Sign in to the human-in-the-loop review console.
         </p>

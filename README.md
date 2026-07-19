@@ -1,4 +1,4 @@
-# Face Anonymization System
+# Classmoment — Face Anonymization for School Photos
 
 A privacy-compliant (COPPA / FERPA / GDPR-oriented) media processing pipeline. It
 cross-references uploaded **group photos** against a **"No-Social-Media-Consent"

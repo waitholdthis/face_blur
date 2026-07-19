@@ -1,4 +1,4 @@
-const TOKEN_KEY = "faceblur_token";
+const TOKEN_KEY = "classmoment_token";
 
 export function saveToken(token: string): void {
   if (typeof window !== "undefined") {
