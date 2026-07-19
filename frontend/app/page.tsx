@@ -76,6 +76,7 @@ export default function Home() {
             </div>
 
             <div className="landing-hero-visual" aria-label="Example photo review interface">
+              <div className="landing-hero-stage">
               <div className="landing-orbit landing-orbit-one" />
               <div className="landing-orbit landing-orbit-two" />
               <div className="landing-app-window">
@@ -107,6 +108,7 @@ export default function Home() {
               <div className="landing-float-card landing-float-match">
                 <span className="landing-match-ring"><CheckIcon /></span>
                 <span><small>Match confirmed</small><strong>Face will be blurred</strong></span>
+              </div>
               </div>
             </div>
           </div>

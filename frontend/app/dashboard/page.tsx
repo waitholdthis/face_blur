@@ -89,12 +89,20 @@ export default function DashboardPage() {
 
   return (
     <AppShell>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 12,
+        }}
+      >
         <div>
           <h1 className="page-title">Review Queue</h1>
           <p className="page-sub">Uploaded media awaiting anonymization review.</p>
         </div>
-        <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           {media.length > 0 && (
             <button className="btn danger" onClick={removeAllMedia} disabled={busy}>
               Delete all uploads
